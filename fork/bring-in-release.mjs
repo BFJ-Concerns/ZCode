@@ -197,7 +197,8 @@ function cliPackages(worktree) {
 // Replay and gates
 
 function cherryPick(worktree, commits) {
-  const picked = git(["cherry-pick", "--allow-empty", "--empty=keep", ...commits], {
+  // --keep-redundant-commits is --empty=keep under the name Git before 2.45 knows.
+  const picked = git(["cherry-pick", "--allow-empty", "--keep-redundant-commits", ...commits], {
     cwd: worktree,
     allowFailure: true,
   });
