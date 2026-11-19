@@ -144,13 +144,16 @@ function formatSearxngWebSearch(value: unknown): string {
     title: title && title !== url ? title : URL.parse(url)?.hostname,
   }));
   const render = (displayQuery: string, displaySummary?: string) =>
-    formatWebSearchModelContent({
-      ...parsed.data,
-      query: displayQuery,
-      results: [],
-      sources: links,
-      summary: displaySummary,
-    });
+    formatWebSearchModelContent(
+      {
+        ...parsed.data,
+        query: displayQuery,
+        results: [],
+        sources: links,
+        summary: displaySummary,
+      },
+      (url) => url,
+    );
 
   const full = render(query, summary);
   if (Buffer.byteLength(full) <= budget) return full;

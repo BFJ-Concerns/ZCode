@@ -39,15 +39,20 @@ export function buildWebSearchOutput(
   };
 }
 
-export function formatWebSearchModelContent(output: unknown): string {
+// fork(searxng-search): accepts the caller's source identity for client search
+export function formatWebSearchModelContent(
+  output: unknown,
+  sourceKey?: (url: string) => string,
+): string {
   const parsed = WebSearchOutputSchema.safeParse(output);
   if (!parsed.success) return modelMessageContentToText(JSON.stringify(output) ?? "");
 
   const data = parsed.data;
-  const links = dedupeSources([
-    ...data.sources,
-    ...extractSourcesFromResults(data.results),
-  ]).slice(0, MAX_SOURCE_LINKS);
+  // fork(searxng-search): deduplicates formatted links by the caller's source identity
+  const links = dedupeSources(
+    [...data.sources, ...extractSourcesFromResults(data.results)],
+    sourceKey,
+  ).slice(0, MAX_SOURCE_LINKS);
   const lines = [`Web search results for query: "${data.query}"`, ""];
 
   if (data.summary) {
@@ -150,10 +155,14 @@ function dedupeResults(results: WebSearchResultItem[]): WebSearchResultItem[] {
   });
 }
 
-function dedupeSources(sources: WebSearchSource[]): WebSearchSource[] {
+// fork(searxng-search): keeps native search's default source identity
+function dedupeSources(
+  sources: WebSearchSource[],
+  sourceKey = (url: string) => url.toLowerCase(),
+): WebSearchSource[] {
   const seen = new Set<string>();
   return sources.filter((source) => {
-    const key = source.url.toLowerCase();
+    const key = sourceKey(source.url);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

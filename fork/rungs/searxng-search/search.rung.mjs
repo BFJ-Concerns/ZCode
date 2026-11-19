@@ -146,6 +146,26 @@ function markdownLinks(text) {
   return [...text.matchAll(/^- \[[^\]]+\]\(([^)]+)\)$/gm)].map((match) => match[1]);
 }
 
+test("case-sensitive destinations each appear once", async (t) => {
+  const webResults = [
+    { ...WEB_RESULT, url: "https://guide.example/Guide?edition=A" },
+    { ...WEB_RESULT, url: "https://guide.example/guide?edition=A" },
+    { ...WEB_RESULT, url: "https://guide.example/Guide?edition=a" },
+  ];
+  const { home, provider } = await ownerWithSearch(t, {
+    configured: true,
+    nativeSearch: false,
+    script: [callTool("WebSearch", { query: WEB_QUERY }), say("Done.")],
+    webResults: [...webResults, webResults[0]],
+  });
+  await run(t, home, "Search the web.");
+  const reply = toolMessages(provider.modelRequests()[1]);
+  assert.deepEqual(
+    markdownLinks(reply),
+    webResults.map(({ url }) => url),
+  );
+});
+
 test("a full page keeps complete links and a summary within the model's UTF-8 limit", async (t) => {
   const webResults = Array.from({ length: 20 }, (_, index) => ({
     title: `Guide ${index + 1}`,
