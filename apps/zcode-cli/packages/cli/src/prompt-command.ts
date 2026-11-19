@@ -42,7 +42,11 @@ import type {
   RunDependencies,
 } from "./cli-types.js";
 import { workspaceTrustCommandArgument } from "./hooks-trust-command.js";
-import { createRunEnding, type RunEnding } from "./fork/unattended-run/index.js";
+import {
+  createRunEnding,
+  type ClosingOutput,
+  type RunEnding,
+} from "./fork/unattended-run/index.js";
 // fork(per-run-model): use the registry to validate the requested selection
 import { validateRunModelSelection } from "./fork/per-run-model/index.js";
 
@@ -180,14 +184,23 @@ export const runPrompt = async (
     })();
     await closePromise;
   };
+  // fork(unattended-run): where the closing result goes and what the run has started, as they stand when it closes
+  const closingNow = (): ClosingOutput => ({
+    ...closing,
+    ...(app ? { sessionId: String(app.sessionId), runtime: app.runtime } : {}),
+    ...(traceId ? { traceId } : {}),
+    signal: abortController.signal,
+    stopEvents: stopObservingEvents,
+  });
   const unregisterShutdownHandlers = registerCliShutdownHandlers({
     abort: (signal) => {
       // fork(unattended-run): a signal cancels the run
       runEnding.cancelledBy(signal);
       abortController.abort(new Error(`CLI received ${signal}`));
     },
-    // fork(unattended-run): the run prints its result, saying it was cancelled, before the process exits
-    cleanup: () => runEnding.afterResult(closeApp),
+    // fork(unattended-run): a stopped run prints its result at once, then closes the session and the browser together, however long its turn takes to give up
+    cleanup: () =>
+      runEnding.closeStoppedRun(closingNow(), [closeApp, async () => browserRuntime?.close()]),
     cleanupTimeoutMs: deps.shutdownCleanupTimeoutMs,
     exitProcess: deps.exitProcess,
     process: deps.shutdownProcess,
@@ -345,6 +358,8 @@ export const runPrompt = async (
         workflowMode,
         // fork(unattended-run): the command's result says how the run ended
         runEnding,
+        // fork(unattended-run): where the command's result goes
+        closingNow,
       );
     }
 
@@ -399,11 +414,8 @@ export const runPrompt = async (
     stopObservingEvents();
     // `response` 取**最后**一个回合的文本：工作流结算后的那次总结才是答案。
     // 未进入等待时数组只有一项，于是 response ≡ result.response，行为逐字节不变。
-    // fork(unattended-run): the run's own later turns, without those of its subagents
-    const turnResponses = [
-      result.response,
-      ...runEnding.laterTurnResponses(result.turnId ? String(result.turnId) : undefined),
-    ].filter((text) => text.trim().length > 0);
+    // fork(unattended-run): the answers of the run's own turns in the order they ended, without those of its subagents
+    const turnResponses = runEnding.answers(result.response);
     const response = turnResponses.at(-1) ?? result.response;
     // 只在真的多于一个回合时才带上数组——单回合运行的 json 输出因此逐字节不变。
     // 刻意在两处 summary 里各自内联这个条件展开而不是共享一个变量：展开一个联合类型的
@@ -416,6 +428,8 @@ export const runPrompt = async (
       workingDirectory,
     });
 
+    // fork(unattended-run): the run prints one result, after its last event, and none once a stopped run has printed it
+    if (!runEnding.claimResult(stopObservingEvents)) return runEnding.exitCode();
     if (streamsEvents) {
       // Closing summary, on its own line and tagged so it can be told apart
       // from the events preceding it. Same fields as --json, so a caller that
@@ -498,6 +512,8 @@ export const runPrompt = async (
     runEnding.reportInText(ctx.stderr);
     return runEnding.exitCode();
   } catch (error) {
+    // fork(unattended-run): a run stopped by a signal says so in its result, not as an error
+    if (runEnding.wasStopped()) return await runEnding.closeAfterError(error, closingNow());
     const message = error instanceof Error ? error.message : String(error);
     ctx.stderr.write(`Error: ${message}${traceId ? ` (traceId: ${traceId})` : ""}\n`);
     if (options.verbose) {
@@ -509,15 +525,8 @@ export const runPrompt = async (
       }
     }
     // fork(unattended-run): waits while background work can still wake the model, then closes with a result saying how the run ended
-    return await runEnding.closeAfterError(error, {
-      ...closing,
-      ...(app ? { sessionId: String(app.sessionId), runtime: app.runtime } : {}),
-      ...(traceId ? { traceId } : {}),
-      signal: abortController.signal,
-    });
+    return await runEnding.closeAfterError(error, closingNow());
   } finally {
-    // fork(unattended-run): the result is printed; a signal's cleanup may proceed
-    runEnding.resultPrinted();
     stopObservingEvents();
     unregisterShutdownHandlers();
     await closeApp();
@@ -584,6 +593,7 @@ async function runPromptCommandCenterCommand(
   deps: RunDependencies,
   workflowMode: DynamicWorkflowMode,
   runEnding: RunEnding,
+  closingNow: () => ClosingOutput,
 ): Promise<number> {
   const commandCenter = createCommandCenter({
     getApp: async () => app as unknown as CommandCenterApp,
@@ -620,41 +630,25 @@ async function runPromptCommandCenterCommand(
     );
     // fork(unattended-run): a command that cannot go on still closes with a result saying it failed
     return await runEnding.closeAfterError(new Error(result.response), {
-      stdout: ctx.stdout,
-      stderr: ctx.stderr,
-      format: { streams: wantsEventStream(options), json: wantsJsonSummary(options) },
-      sessionId: String(app.sessionId),
+      ...closingNow(),
       ...(nextTraceId ? { traceId: nextTraceId } : {}),
+      runtime: undefined,
     });
   }
 
-  // fork(unattended-run): waits while the command's background work can still wake the model; a woken turn's answer is the command's
-  const response = (await runEnding.waitWhileWakeable(app.runtime, abortSignal)) ?? result.response;
+  // fork(unattended-run): waits while the command's background work can still wake the model
+  await runEnding.waitWhileWakeable(app.runtime, abortSignal);
 
   if (options.memoryBench) {
     await app.runtime.drainMemoryExtractions(null);
     abortSignal.throwIfAborted();
   }
 
-  if (wantsJsonSummary(options)) {
-    // fork(unattended-run): the command's result, as a run's, says how it ended
-    return runEnding.writeResult(
-      {
-        stdout: ctx.stdout,
-        stderr: ctx.stderr,
-        format: { streams: wantsEventStream(options), json: true },
-        sessionId: String(app.sessionId),
-        ...(nextTraceId ? { traceId: nextTraceId } : {}),
-      },
-      response,
-    );
-  }
-
-  // fork(unattended-run): the answer after any woken turn
-  ctx.stdout.write(`${response}\n`);
-  // fork(unattended-run): says on stderr, and in the exit status, how a command that did not finish ended
-  runEnding.reportInText(ctx.stderr);
-  return runEnding.exitCode();
+  // fork(unattended-run): the command's result, as a run's, gives its last turn's answer and says how it ended
+  return runEnding.close(
+    { ...closingNow(), ...(nextTraceId ? { traceId: nextTraceId } : {}) },
+    runEnding.answers(result.response).at(-1),
+  );
 }
 
 async function listCustomCommandsForPrompt(deps: RunDependencies) {
