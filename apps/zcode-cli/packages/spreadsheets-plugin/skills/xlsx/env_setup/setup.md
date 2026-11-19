@@ -47,7 +47,7 @@ Run the platform-appropriate setup script:
 | Python pkg | openpyxl | Read/write .xlsx files |
 | Python pkg | XlsxWriter | High-performance .xlsx creation |
 | On demand (not substitutable) | LibreOffice | recalc, .xlsx-to-PDF, .csv-to-.xlsx — install it; do not swap in local Excel/WPS |
-| Font | CJK fonts (pre-installed in /usr/share/fonts) | Chinese text in spreadsheets |
+| Font | CJK fonts (installed on the system; see Step 3) | Chinese text in spreadsheets |
 
 ### Manual Install by Platform
 
@@ -116,44 +116,58 @@ Alternative Windows package managers:
 
 ## Step 3: Font Verification
 
-Fonts are pre-installed in the system font directory `/usr/share/fonts/`.
+The skill works with the fonts already installed on the machine.
 
-- **Font base**: `/usr/share/fonts/`
-- **Font list**: `env_setup/font_list.txt` (78 fonts, one relative path per line)
-- The setup script reads `font_list.txt` and verifies each font exists under `/usr/share/fonts/`
+- **Font list**: `env_setup/font_list.txt` — one font file per line, written as the path that file
+  has on a Debian-style system (`/usr/share/fonts/truetype/<group>/<file>`)
+- **macOS / Linux**: the setup script downloads nothing. It checks that each file in `font_list.txt`
+  exists at its listed path, prints `Missing font` for each one that does not, and counts them as an
+  issue in its summary. Those paths exist only on a machine laid out that way. Anywhere else the
+  same families sit at other paths, so `Missing font` there is not a setup failure: see
+  *Missing Fonts* below.
+- **Windows**: the setup script downloads fonts only when the user has named a font mirror in the
+  `ZCODE_FONT_SOURCE_URL` environment variable, and it downloads them from nowhere else. With the
+  variable unset it downloads nothing, prints `No font mirror named: using installed fonts`, and
+  carries on, which is not a setup failure either. With it set, the script requests
+  `$ZCODE_FONT_SOURCE_URL/<line>` for each line of `font_list.txt` whose file is not already in
+  `%LOCALAPPDATA%\Microsoft\Windows\Fonts` — the line exactly as written, with `[`, `]` and spaces
+  URL-encoded — and saves the file there by filename. Use the variable only as the user set it or
+  gave it to you. Never guess a value, and never put another font host in its place.
 
-### Font Directory Structure (78 fonts)
+### Missing Fonts
 
-| Directory | Count | Description |
-|-----------|-------|-------------|
-| `truetype/lxgw-wenkai/` | 6 | LXGW WenKai — Chinese handwriting style |
-| `truetype/noto-serif-sc/` | 9 | Noto Serif SC — Chinese serif (variable + 8 static weights) |
-| `chinese/` | 14 | Noto Sans SC, Sarasa Mono SC, Liberation fallbacks |
-| `dejavu/` | 8 | DejaVu Sans/Serif/Mono — Latin/symbol fallback |
-| `emoji/` | 1 | Noto Color Emoji |
-| `english/` | 12 | Tinos, Carlito, Calibri |
-| `freefont/` | 12 | FreeSans/FreeSerif/FreeMono — open-source fallback |
-| `liberation/` | 12 | Liberation Sans/Serif/Mono — MS-metric-compatible |
-| `libreoffice/` | 1 | OpenSymbol |
-| `noto/` | 1 | Noto Color Emoji (duplicate) |
-| `wqy/` | 1 | WenQuanYi Zen Hei — CJK fallback |
-| *(root)* | 1 | Japanese Gothic |
+Where the setup script has supplied no fonts, work with what is installed and add only what the
+document needs:
 
-### Verify Fonts Manually
+1. **List the installed fonts.** On Linux: `fc-list : family | sort -u`, or `fc-list :lang=zh family`
+   for the families that cover Chinese. macOS and Windows ship fonts for both Chinese and Latin text
+   (PingFang SC and Songti SC; Microsoft YaHei and SimSun), so there this step usually settles it.
+2. **Pick an installed family for each role the document needs**, from the table below. An installed
+   family of the same role is a good substitute for a listed one that is absent.
+3. **Install from the system's package manager** only when no installed family fills a role, and only
+   with the user's confirmation, as the skill's Local-font-first rule requires. Name the package when
+   you ask. If there is nobody to ask, or the install fails, continue with the closest installed
+   family and say in your result which substitution you made.
+4. **On Linux, run `fc-cache -f`** after installing, then confirm with `fc-list` that the family is
+   there.
 
-Check if a font exists:
+| Role | Families in `font_list.txt` | Debian/Ubuntu package | Arch package |
+|------|-----------------------------|-----------------------|--------------|
+| Chinese sans-serif | Noto Sans SC | `fonts-noto-cjk` | `noto-fonts-cjk` |
+| Chinese serif | Noto Serif SC | `fonts-noto-cjk` | `noto-fonts-cjk` |
+| Chinese handwriting (Kai) | LXGW WenKai, LXGW WenKai Mono | `fonts-lxgw-wenkai` | not in the official repositories |
+| Chinese monospace | Sarasa Mono SC | not packaged | `ttf-sarasa-gothic` |
+| Chinese fallback | WenQuanYi Zen Hei | `fonts-wqy-zenhei` | `wqy-zenhei` |
+| Latin, metric-compatible with Arial, Times New Roman and Courier New | Liberation Sans/Serif/Mono, Tinos | `fonts-liberation`, `fonts-croscore` | `ttf-liberation`, `ttf-croscore` |
+| Latin, metric-compatible with Calibri | Carlito | `fonts-crosextra-carlito` | `ttf-carlito` |
+| Latin and symbol fallback | DejaVu Sans/Serif/Sans Mono, FreeSans/FreeSerif/FreeMono | `fonts-dejavu-core`, `fonts-freefont-ttf` | `ttf-dejavu`, `gnu-free-fonts` |
+| Symbols | OpenSymbol | installed with LibreOffice | installed with LibreOffice |
 
-```bash
-ls /usr/share/fonts/truetype/chinese/NotoSansSC\[wght\].ttf
-```
-
-Verify all fonts in the list:
-
-```bash
-while read f; do
-    [ -f "$f" ] && echo "OK: $f" || echo "MISSING: $f"
-done < env_setup/font_list.txt
-```
+Package names differ between systems. Where a name above does not exist, search the package manager
+by family name (`apt-cache search`, `pacman -Ss`, `dnf search`, `brew search font-`) rather than
+downloading font files from the web. A package can name a family differently from the file in the
+list: the Noto CJK packages install `Noto Sans CJK SC` and `Noto Serif CJK SC`, not `Noto Sans SC`
+and `Noto Serif SC`. Use the family name `fc-list` reports.
 
 ### Post-Setup Variable
 
