@@ -28,6 +28,8 @@ import {
   resolveWorkspaceHookTrustIdentity,
   type WorkspaceHookTrustIdentityFs,
 } from "@zcode/shared/managed-worktree";
+// fork(searxng-config-diagnostics): describes an unusable search endpoint in the configuration log
+import { describeOwnerSearxngUrlDiagnostic } from "../fork/searxng-search/index.js";
 import { createConfigPort } from "./index.js";
 import {
   loadFileConfig,
@@ -530,13 +532,16 @@ function logConfigDiagnostics(input: {
   });
 
   for (const diagnostic of diagnostics) {
-    logger.warn(resolveConfigDiagnosticLogMessage(diagnostic.code), {
+    // fork(searxng-config-diagnostics): includes the reason in the console and file log message
+    const searchDiagnostic = describeOwnerSearxngUrlDiagnostic(diagnostic);
+    logger.warn(searchDiagnostic?.message ?? resolveConfigDiagnosticLogMessage(diagnostic.code), {
       configPath: diagnostic.filePath,
       configScope: diagnostic.configScope,
       diagnosticCode: diagnostic.code,
       diagnosticMessage: diagnostic.message,
       diagnosticPath: diagnostic.path,
-      event: resolveConfigDiagnosticLogEvent(diagnostic.code),
+      // fork(searxng-config-diagnostics): records the search diagnostic event
+      event: searchDiagnostic?.event ?? resolveConfigDiagnosticLogEvent(diagnostic.code),
       severity: diagnostic.severity,
     });
   }

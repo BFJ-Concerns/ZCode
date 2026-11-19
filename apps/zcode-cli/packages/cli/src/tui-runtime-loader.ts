@@ -5,6 +5,8 @@ import { homedir, platform, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { runTui } from "@zcode/tui";
+// fork(terminal-node-ffi): loads OpenTUI with a backend that supports usize
+import { loadWithOpenTuiFallback } from "./fork/terminal-node-ffi/index.js";
 
 declare const __CLI_VERSION__: string;
 
@@ -36,7 +38,8 @@ export const loadTuiRuntime = async (): Promise<TuiRuntimeModule> => {
   const sea = await import("node:sea");
 
   if (!sea.isSea()) {
-    return await import("@zcode/tui");
+    // fork(terminal-node-ffi): lets OpenTUI select its fallback before initialising the renderer
+    return await loadWithOpenTuiFallback(() => import("@zcode/tui"));
   }
 
   const runtimeDirectory = await ensureSeaTuiRuntime(sea);
