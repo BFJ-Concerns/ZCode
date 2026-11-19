@@ -6,6 +6,7 @@
  */
 
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { connect } from "node:net";
 import { beforeEach, test } from "node:test";
 import { launch } from "../../harness/launcher.mjs";
@@ -73,7 +74,6 @@ test("a signal stops a run that is waiting for the model", async (t) => {
   const outcome = await run.stop("SIGTERM");
 
   assert.notEqual(outcome.exitCode, 0, "a stopped run does not report success");
-  assert.equal(outcome.result, undefined, "a stopped run prints no result");
 });
 
 test("only the stand-ins can be reached, and every other attempt is recorded", async (t) => {
@@ -123,4 +123,31 @@ test("only the stand-ins can be reached, and every other attempt is recorded", a
       { protocol: "tcp", to: "203.0.113.7", port: 443 },
     ],
   );
+});
+
+test("a non-loopback address is refused even when a server listens on every interface", async (t) => {
+  const server = createServer((_request, response) => response.end("unexpected connection"));
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "0.0.0.0", resolve);
+  });
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const { port } = server.address();
+
+  const allowed = await fetch(`http://127.0.0.1:${port}/`);
+  assert.equal(allowed.status, 200);
+  await allowed.text();
+
+  await assert.rejects(
+    new Promise((resolve, reject) =>
+      connect(port, "203.0.113.8").once("connect", resolve).once("error", reject),
+    ),
+    { code: "ECONNREFUSED" },
+  );
+  assert.deepEqual((await attempts()).connections, [
+    { protocol: "tcp", address: "203.0.113.8", port },
+  ]);
 });

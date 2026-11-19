@@ -38,7 +38,11 @@ async function rungFiles() {
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(RUNG_SUFFIX))
     .map((entry) => join(entry.parentPath, entry.name))
-    .filter((file) => filters.length === 0 || filters.some((text) => file.includes(text)))
+    .filter(
+      (file) =>
+        filters.length === 0 ||
+        filters.some((text) => relative(REPOSITORY_ROOT, file).includes(text)),
+    )
     .sort();
 }
 
