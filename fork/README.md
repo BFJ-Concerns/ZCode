@@ -2,7 +2,8 @@
 
 This checkout is ZCode as upstream ships it, plus a small number of differences. The
 fork builds, runs and proves only the terminal UI and the command line: `@zcode/cli`
-under `apps/zcode-cli` and the workspace packages it depends on. The desktop app, the
+under `apps/zcode-cli`, the workspace packages it depends on, and the document plugins
+it bundles. The desktop app, the
 browser interface and the mobile app stay in the tree exactly as upstream ships them
 and are never built here.
 
@@ -17,7 +18,7 @@ node fork/build.mjs
 ```
 
 installs the dependencies of `@zcode/cli` from the lockfile and builds it with the
-packages it depends on. It needs Node and pnpm at the versions in `mise.toml`, and the
+packages it depends on and the document plugins it bundles. It needs Node and pnpm at the versions in `mise.toml`, and the
 npm registry (or a pnpm store that already has the packages) the first time.
 
 The result runs in place and is executable:
