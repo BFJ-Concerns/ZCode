@@ -18,23 +18,18 @@ export interface ListedModel {
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
   readonly reasoningLevels?: readonly string[];
+  /** The listing advertises reasoning without naming any levels. */
+  readonly reasoningSupported?: true;
 }
-
-/**
- * The levels OpenRouter accepts for `reasoning.effort` on every model whose listing
- * names the `reasoning` parameter, lowest first. OpenRouter's listing says only whether
- * a model reasons, not which levels it takes.
- */
-const OPENROUTER_REASONING_LEVELS = Object.freeze(["low", "medium", "high"]);
 
 /** The only level a model holds when its listing says it does not reason. */
 const NO_REASONING_LEVELS = Object.freeze(["disabled"]);
 
-export function parseModelListing(body: unknown): readonly ListedModel[] {
-  if (!isRecord(body)) throw new Error("the model listing is not a JSON object");
+export function parseModelListing(body: unknown): readonly ListedModel[] | undefined {
+  if (!isRecord(body)) return undefined;
   const catalogue = Array.isArray(body.models) ? body.models : undefined;
   const openAi = Array.isArray(body.data) ? body.data : undefined;
-  if (!catalogue && !openAi) throw new Error("the model listing has neither `models` nor `data`");
+  if (!catalogue && !openAi) return undefined;
 
   const listed = new Map<string, ListedModel>();
   for (const entry of catalogue ?? []) {
@@ -78,20 +73,23 @@ function readOpenAiEntry(entry: unknown): ListedModel | undefined {
     maxOutputTokens:
       positiveInteger(topProvider.max_completion_tokens) ??
       positiveInteger(entry.max_completion_tokens),
-    reasoningLevels: openAiReasoningLevels(entry),
+    ...openAiReasoning(entry),
   });
 }
 
 /** CLIProxyAPI's own registry entries carry `thinking.levels`; OpenRouter's carry `supported_parameters`. */
-function openAiReasoningLevels(entry: Record<string, unknown>): readonly string[] | undefined {
+function openAiReasoning(
+  entry: Record<string, unknown>,
+): Pick<ListedModel, "reasoningLevels" | "reasoningSupported"> {
   if (isRecord(entry.thinking) && Array.isArray(entry.thinking.levels)) {
-    return uniqueLevels(entry.thinking.levels.map(nonEmptyString));
+    const levels = uniqueLevels(entry.thinking.levels.map(nonEmptyString));
+    if (levels) return { reasoningLevels: levels };
   }
-  if (!Array.isArray(entry.supported_parameters)) return undefined;
+  if (!Array.isArray(entry.supported_parameters)) return {};
   const reasons = entry.supported_parameters.some(
     (parameter) => parameter === "reasoning" || parameter === "reasoning_effort",
   );
-  return reasons ? OPENROUTER_REASONING_LEVELS : NO_REASONING_LEVELS;
+  return reasons ? { reasoningSupported: true } : { reasoningLevels: NO_REASONING_LEVELS };
 }
 
 function listedModel(modelId: string, limits: Omit<ListedModel, "modelId">): ListedModel {
@@ -100,6 +98,7 @@ function listedModel(modelId: string, limits: Omit<ListedModel, "modelId">): Lis
     ...(limits.contextWindow === undefined ? {} : { contextWindow: limits.contextWindow }),
     ...(limits.maxOutputTokens === undefined ? {} : { maxOutputTokens: limits.maxOutputTokens }),
     ...(limits.reasoningLevels === undefined ? {} : { reasoningLevels: limits.reasoningLevels }),
+    ...(limits.reasoningSupported ? { reasoningSupported: true } : {}),
   });
 }
 
