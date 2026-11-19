@@ -48,7 +48,7 @@ Run the platform-appropriate setup script:
 | Runtime | Python 3 + pip | Post-processing scripts |
 | Python pkg | defusedxml | Safe XML parsing for validation |
 | On demand (not substitutable) | LibreOffice | `.doc`→`.docx`, DOCX→PDF, visual verification — install it; do not swap in local Word/WPS/Pages |
-| Font | CJK fonts (from CDN) | Chinese text in documents |
+| Font | CJK fonts (installed on the system; see Step 3) | Chinese text in documents |
 
 ### Manual Install by Platform
 
@@ -91,33 +91,31 @@ Alternative Windows package managers:
 
 ## Step 3: Font Installation
 
-Fonts are downloaded individually from CDN on first setup.
+The skill works with the fonts already installed on the machine. The setup script downloads fonts
+only when the user has named a font mirror in the `ZCODE_FONT_SOURCE_URL` environment variable, and
+it downloads them from nowhere else.
 
-- **CDN base**: `https://z-cdn.chatglm.cn/office-skill/fonts/`
-- **Font list**: `env_setup/font_list.txt` (78 fonts, one relative path per line)
-- **Marker file**: `.office-skill-fonts-installed` in the user font directory prevents re-download
-- Special characters in filenames (e.g., `[`, `]`) are URL-encoded automatically by the setup script
+- **Font list**: `env_setup/font_list.txt` — one font file per line, written as the path that file
+  has on a Debian-style system (`/usr/share/fonts/truetype/<group>/<file>`)
+- **Font mirror**: `ZCODE_FONT_SOURCE_URL` — the base URL of a server the user chose that holds the
+  files in `font_list.txt`. Use it only as the user set it or gave it to you. Never guess a value,
+  and never put another font host in its place.
+- **Marker file**: `.office-skill-fonts-installed` in the user font directory records a complete
+  download, so later runs skip the step. Delete it to download again.
 
-The setup scripts read `font_list.txt`, check which fonts are already installed, and download only the missing ones. Each font is saved flat (filename only) to the user font directory.
+### What the Setup Script Does
 
-### CDN Directory Structure (78 fonts)
+| `ZCODE_FONT_SOURCE_URL` | Font step |
+|-------------------------|-----------|
+| Not set | Downloads nothing, prints `No font mirror named: using installed fonts`, and carries on. This is not a setup failure: see *Missing Fonts* below. |
+| Set | For each line of `font_list.txt` whose file is not already in the user font directory, requests `$ZCODE_FONT_SOURCE_URL/<line>` — the line exactly as written, with `[`, `]` and spaces URL-encoded — and saves the file flat (filename only) to the user font directory. If a download fails, the script reports it, leaves the marker unwritten, and retries on the next run. |
 
-| Directory | Count | Description |
-|-----------|-------|-------------|
-| `truetype/lxgw-wenkai/` | 6 | LXGW WenKai — Chinese handwriting style |
-| `truetype/noto-serif-sc/` | 9 | Noto Serif SC — Chinese serif (variable + 8 static weights) |
-| `chinese/` | 14 | Noto Sans SC, Sarasa Mono SC, Liberation fallbacks |
-| `dejavu/` | 8 | DejaVu Sans/Serif/Mono — Latin/symbol fallback |
-| `emoji/` | 1 | Noto Color Emoji |
-| `english/` | 12 | Tinos, Carlito, Calibri |
-| `freefont/` | 12 | FreeSans/FreeSerif/FreeMono — open-source fallback |
-| `liberation/` | 12 | Liberation Sans/Serif/Mono — MS-metric-compatible |
-| `libreoffice/` | 1 | OpenSymbol |
-| `noto/` | 1 | Noto Color Emoji (duplicate) |
-| `wqy/` | 1 | WenQuanYi Zen Hei — CJK fallback |
-| *(root)* | 1 | Japanese Gothic |
+If the user wants the exact files in `font_list.txt`, a mirror is how they get them: they set
+`ZCODE_FONT_SOURCE_URL`, and you run the setup script again.
 
 ### Install Targets by Platform
+
+Fonts from a mirror are saved to the user font directory:
 
 | Platform | User Font Directory |
 |----------|-------------------|
@@ -125,29 +123,46 @@ The setup scripts read `font_list.txt`, check which fonts are already installed,
 | Linux | `~/.local/share/fonts/` (then run `fc-cache -f`) |
 | Windows | `%LOCALAPPDATA%\Microsoft\Windows\Fonts` (per-user, no admin) |
 
-### Manual Font Installation
+### Missing Fonts
 
-If CDN is unreachable, download fonts manually. Example:
+Where the setup script has supplied no fonts, work with what is installed and add only what the
+document needs:
 
-```bash
-# Download a single font
-curl -fSLO "https://z-cdn.chatglm.cn/office-skill/fonts/chinese/NotoSansSC%5Bwght%5D.ttf"
-# Copy to user font dir
-cp "NotoSansSC[wght].ttf" ~/Library/Fonts/   # macOS
-```
+1. **List the installed fonts.** On Linux: `fc-list : family | sort -u`, or `fc-list :lang=zh family`
+   for the families that cover Chinese. macOS and Windows ship fonts for both Chinese and Latin text
+   (PingFang SC and Songti SC; Microsoft YaHei and SimSun), so there this step usually settles it.
+2. **Pick an installed family for each role the document needs**, from the table below. An installed
+   family of the same role is a good substitute for a listed one that is absent.
+3. **Install from the system's package manager** only when no installed family fills a role, and only
+   with the user's confirmation, as the skill's Local-font-first rule requires. Name the package when
+   you ask. If there is nobody to ask, or the install fails, continue with the closest installed
+   family and say in your result which substitution you made.
+4. **On Linux, run `fc-cache -f`** after installing, then confirm with `fc-list` that the family is
+   there.
 
-Or download all fonts listed in `font_list.txt`:
+| Role | Families in `font_list.txt` | Debian/Ubuntu package | Arch package |
+|------|-----------------------------|-----------------------|--------------|
+| Chinese sans-serif | Noto Sans SC | `fonts-noto-cjk` | `noto-fonts-cjk` |
+| Chinese serif | Noto Serif SC | `fonts-noto-cjk` | `noto-fonts-cjk` |
+| Chinese handwriting (Kai) | LXGW WenKai, LXGW WenKai Mono | `fonts-lxgw-wenkai` | not in the official repositories |
+| Chinese monospace | Sarasa Mono SC | not packaged | `ttf-sarasa-gothic` |
+| Chinese fallback | WenQuanYi Zen Hei | `fonts-wqy-zenhei` | `wqy-zenhei` |
+| Latin, metric-compatible with Arial, Times New Roman and Courier New | Liberation Sans/Serif/Mono, Tinos | `fonts-liberation`, `fonts-croscore` | `ttf-liberation`, `ttf-croscore` |
+| Latin, metric-compatible with Calibri | Carlito | `fonts-crosextra-carlito` | `ttf-carlito` |
+| Latin and symbol fallback | DejaVu Sans/Serif/Sans Mono, FreeSans/FreeSerif/FreeMono | `fonts-dejavu-core`, `fonts-freefont-ttf` | `ttf-dejavu`, `gnu-free-fonts` |
+| Symbols | OpenSymbol | installed with LibreOffice | installed with LibreOffice |
 
-```bash
-while read f; do
-    encoded=$(echo "$f" | sed 's/\[/%5B/g; s/\]/%5D/g')
-    curl -fSLO "https://z-cdn.chatglm.cn/office-skill/fonts/$encoded"
-done < env_setup/font_list.txt
-```
+Package names differ between systems. Where a name above does not exist, search the package manager
+by family name (`apt-cache search`, `pacman -Ss`, `dnf search`, `brew search font-`) rather than
+downloading font files from the web. A package can name a family differently from the file in the
+list: the Noto CJK packages install `Noto Sans CJK SC` and `Noto Serif CJK SC`, not `Noto Sans SC`
+and `Noto Serif SC`. Use the family name `fc-list` reports.
 
 ### Post-Install Variable
 
-After font installation, `FONT_DIR` points to the user font directory:
+The setup script sets `FONT_DIR` to the user font directory, where fonts from a mirror are saved.
+Fonts that came with the system or its package manager are elsewhere; `fc-list : family file`
+gives any installed font's path.
 
 | Platform | FONT_DIR |
 |----------|----------------|

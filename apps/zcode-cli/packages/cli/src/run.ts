@@ -25,7 +25,6 @@ import { runCommandsCommand } from "./commands-command.js";
 import { readRunModelFlags } from "./fork/per-run-model/index.js";
 import { runModelsCommand } from "./fork/model-listings/index.js";
 import { resolveCliCwd } from "./cwd.js";
-import { runLoginCommand, runLogoutCommand } from "./login-command.js";
 import { CLI_COMMAND_NAME, CLI_PROCESS_NAME } from "./process-name.js";
 import { isPluginHostInvocation, runPluginHostCommand } from "./plugin-host-command.js";
 import { isDwfChildInvocation, runDwfChildCommand } from "./dwf-child-command.js";
@@ -635,16 +634,7 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
       );
     case "doctor":
       return runDoctor(ctx, options, workingDirectory);
-    case "login":
-      return await runLoginCommand(
-        ctx,
-        options,
-        commandDeps,
-        parsed.values["no-browser"] === true,
-        parsed.positionals.slice(1),
-      );
-    case "logout":
-      return await runLogoutCommand(ctx, options, commandDeps);
+    // fork(zai-silence): `login` and `logout` are not commands; there is no Z.ai account to sign in to
     case "commands":
       return await runCommandsCommand(ctx, options, commandDeps, parsed.positionals.slice(1));
     // fork(model-listings): prints every usable model as JSON

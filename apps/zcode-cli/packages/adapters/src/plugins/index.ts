@@ -105,6 +105,8 @@ export {
   writeCdnOfficialMarketplacePartition,
 } from "./official-marketplace.js";
 
+export { isOfficialCatalogue } from "../fork/zai-silence/index.js";
+
 export { getPluginSourceDiagnosticCode } from "./source-errors.js";
 
 export {
@@ -112,6 +114,7 @@ export {
   comparePluginVersions,
   type PluginUpdateStatus,
 } from "./version-compare.js";
+import { isSitePublishing } from "../fork/zai-silence/index.js";
 
 const ZCODE_MANIFEST_PATH = join(".zcode-plugin", "plugin.json");
 const CLAUDE_MANIFEST_PATH = join(".claude-plugin", "plugin.json");
@@ -210,6 +213,8 @@ export class NodePluginAdapter implements PluginPort {
       if (loaded.source === "official" && request.config.suppressedBuiltins.includes(loaded.id)) {
         continue;
       }
+      // fork(zai-silence): site publishing needs a Z.ai account, so an installed copy is not loaded
+      if (isSitePublishing(loaded.id)) continue;
       if (seen.has(loaded.id)) {
         diagnostics.push({
           code: "plugin_duplicate_id",

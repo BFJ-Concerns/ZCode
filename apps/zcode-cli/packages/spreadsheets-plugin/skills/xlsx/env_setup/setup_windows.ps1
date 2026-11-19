@@ -166,16 +166,20 @@ if (Test-Path $SofficePath) {
 }
 Write-Host ""
 
-# ── Step 2d: Font Installation (from CDN) ──
+# ── Step 2d: Font Installation (from a configured mirror) ──
 Write-Host "--- [4/5] Font Installation ---"
-$FontCdnBase = "https://z-cdn.chatglm.cn/office-skill/fonts"
+# fork(zai-silence): fonts download only from a mirror the owner names, never from Z.ai's CDN
+$FontCdnBase = $env:ZCODE_FONT_SOURCE_URL
 $FontList = Join-Path $ScriptDir "font_list.txt"
 
 $UserFontDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows\Fonts"
 if (-not (Test-Path $UserFontDir)) { New-Item -ItemType Directory -Path $UserFontDir -Force | Out-Null }
 
 $Marker = Join-Path $UserFontDir ".office-skill-fonts-installed"
-if (Test-Path $Marker) {
+# fork(zai-silence): with no mirror named, the fonts already installed are the ones used
+if (-not $FontCdnBase) {
+    Write-Warn "No font mirror named: using installed fonts. Install those in $FontList, or set ZCODE_FONT_SOURCE_URL to a mirror of that layout."
+} elseif (Test-Path $Marker) {
     Write-Ok "Fonts already installed (marker found). To re-install, delete $Marker"
 } else {
     if (-not (Test-Path $FontList)) {
@@ -185,7 +189,7 @@ if (Test-Path $Marker) {
         $lines = Get-Content $FontList | Where-Object { $_.Trim() -ne "" }
         $Total = $lines.Count
         $Installed = 0; $Skipped = 0; $Failed = 0
-        Write-Info "Downloading $Total fonts from CDN..."
+        Write-Info "Downloading $Total fonts from the configured mirror..."
         
         foreach ($relPath in $lines) {
             $fname = Split-Path $relPath -Leaf
@@ -221,7 +225,7 @@ if (Test-Path $Marker) {
     }
 }
 
-# Set XLSX_FONTS_DIR to user font directory (fonts are now installed there)
+# Set XLSX_FONTS_DIR to user font directory
 $XLSX_FONTS_DIR = $UserFontDir
 $env:XLSX_FONTS_DIR = $XLSX_FONTS_DIR
 Write-Host ""
@@ -241,7 +245,7 @@ foreach ($f in $CjkFonts) {
 }
 
 if (-not $CjkFound) {
-    Write-Warn "No CJK font verified yet - fonts were just installed, restart may be needed"
+    Write-Warn "No CJK font verified. Check the installed fonts."
 }
 Write-Host ""
 

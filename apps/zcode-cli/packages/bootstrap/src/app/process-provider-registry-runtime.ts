@@ -5,25 +5,16 @@ import {
   type AccountProviderConfigSnapshot,
   type AccountProviderStates,
 } from "@zcode/provider";
-import {
-  isBuiltinModelProviderId,
-  resolveRuntimeZCodeEndpointOrigin,
-  ZCODE_VERSION,
-} from "@zcode/shared";
-import { dirname, join } from "node:path";
+import { isBuiltinModelProviderId } from "@zcode/shared";
 import {
   NodeModelSelectionConfigRepository,
   NodeProviderRegistryRuntime,
   resolveNodeProviderRuntimePaths,
-  downloadZCodeBuiltinRelease,
-  resolveZCodeBuiltinClientPlatform,
   ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE_ENV,
   type ZCodeBuiltinRefreshEvent,
 } from "@zcode/provider-node";
-import {
-  createSharedZCodeCredentialStore,
-  type SharedZCodeCredentialStore,
-} from "@zcode/adapters/auth";
+import { type SharedZCodeCredentialStore } from "@zcode/adapters/auth";
+import { standaloneZaiAccountCredentials } from "../fork/zai-silence/index.js";
 import { readLegacyCliPersonalProviderConfig } from "./legacy-cli-personal-provider-config-importer.js";
 import {
   createStandaloneProviderRuntimeHeadersPort,
@@ -52,9 +43,8 @@ export async function startProcessProviderRegistryRuntime(
   }
 
   const accountSource = new MutableAccountProviderConfigSource();
-  const credentialStore = options.standalone
-    ? (options.standalone.credentialStore ?? createSharedZCodeCredentialStore({ env: { ...env } }))
-    : undefined;
+  // fork(zai-silence): no Z.ai account is read or used, so the account-only providers are never entitled
+  const credentialStore = standaloneZaiAccountCredentials();
   let standaloneAccount: AccountProviderService | undefined;
   const bundledFile = options.standalone
     ? env[ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE_ENV]?.trim()
@@ -65,23 +55,7 @@ export async function startProcessProviderRegistryRuntime(
       ? {
           zcodeBuiltinFilePath: bundledFile,
           zcodeBuiltinActiveFilePath: paths.zcodeBuiltinFilePath,
-          zcodeBuiltinRemote: {
-            controlFilePath: join(
-              dirname(paths.zcodeBuiltinFilePath),
-              "zcode-builtin-refresh.json",
-            ),
-            resolveEndpointKey: () => resolveRuntimeZCodeEndpointOrigin(env),
-            fetchRelease: (endpointOrigin, signal) =>
-              downloadZCodeBuiltinRelease({
-                endpointOrigin,
-                signal,
-                appVersion: ZCODE_VERSION,
-                platform: resolveZCodeBuiltinClientPlatform(),
-                request: options.standalone?.request ?? globalThis.fetch,
-                resolveZcodeJwtToken: () => credentialStore?.load("zcodejwttoken"),
-              }),
-            onRefreshResult: options.standalone?.onBuiltinRefreshResult,
-          },
+          // fork(zai-silence): the built-in model rules are the ones the build carries, never refreshed from Z.ai
         }
       : {}),
     onZCodeBuiltinRefreshError: options.standalone?.onBuiltinRefreshError,

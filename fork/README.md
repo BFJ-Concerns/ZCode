@@ -2,7 +2,8 @@
 
 This checkout is ZCode as upstream ships it, plus a small number of differences. The
 fork builds, runs and proves only the terminal UI and the command line: `@zcode/cli`
-under `apps/zcode-cli` and the workspace packages it depends on. The desktop app, the
+under `apps/zcode-cli`, the workspace packages it depends on, and the document plugins
+it bundles. The desktop app, the
 browser interface and the mobile app stay in the tree exactly as upstream ships them
 and are never built here.
 
@@ -17,7 +18,7 @@ node fork/build.mjs
 ```
 
 installs the dependencies of `@zcode/cli` from the lockfile and builds it with the
-packages it depends on. It needs Node and pnpm at the versions in `mise.toml`, and the
+packages it depends on and the document plugins it bundles. It needs Node and pnpm at the versions in `mise.toml`, and the
 npm registry (or a pnpm store that already has the packages) the first time.
 
 The result runs in place and is executable:
@@ -163,6 +164,7 @@ record. Tests within a file run one after another and share its sandbox.
 | `harness/owner-home.mjs`      | A fresh home directory holding the owner's configuration files, and the environment that makes `zcode` use it.                                    |
 | `harness/model-provider.mjs`  | A stand-in provider: serves a model listing, answers model requests from a script (`say`, `callTool`, `fail`, `hang`), records every request.     |
 | `harness/searxng.mjs`         | A stand-in SearXNG instance: answers searches, records every query.                                                                               |
+| `harness/http-proxy.mjs`      | A stand-in HTTP proxy: records every destination it is asked to reach, reaches none.                                                              |
 | `harness/launcher.mjs`        | Runs `zcode` as Ensemble's command-line engine runs a worker: prompt as one argument, stdout apart from stderr, exit status, a signal to stop it. |
 | `harness/terminal-ui.mjs`     | Runs the terminal UI in a terminal of its own: types and submits prompts, waits for text to be on the screen, leaves with Ctrl-C twice.           |
 | `harness/network-sandbox.mjs` | The sandbox's record of attempts to leave, and names pointed at a stand-in.                                                                       |
@@ -184,6 +186,15 @@ record. Tests within a file run one after another and share its sandbox.
 - When a rung needs something of the harness that any difference could use (another
   kind of reply, a driver for the interactive terminal UI), it goes into the harness
   module it belongs to, in the commit of the difference that first needs it.
+
+### Z.ai silence
+
+An unnamed marketplace refresh updates the owner's known catalogues and omits the bundled
+official catalogue from both its work and its diagnostics. An explicit request to refresh
+that catalogue explains that it is bundled. The CLI's connection guard checks the Node
+destination, including request options merged with a URL and requests through the owner's
+proxy. Document setup without a named font mirror uses installed fonts and reports what it
+finds.
 
 ## The gates
 

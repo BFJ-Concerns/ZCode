@@ -21,6 +21,7 @@ import { enumeratePluginComponents, type PluginComponentGroup } from "./plugin-c
 import { applyNetworkEgressEnv } from "../network/subprocess-env.js";
 import { createNodeWebFetchHttpClientAdapter } from "../http/index.js";
 import { writeCdnOfficialMarketplacePartition } from "./official-marketplace.js";
+import { isOfficialCatalogue, refreshableMarketplaces } from "../fork/zai-silence/index.js";
 import {
   isZipPluginUrlSource,
   readZipPluginSourceSha256,
@@ -387,6 +388,8 @@ export async function ensureMarketplaceManifestAvailable(input: {
     (item) => item.id === input.marketplace,
   );
   if (!record) return null;
+  // fork(zai-silence): the official catalogue is never fetched from Z.ai's CDN; only its bundled plugins exist
+  if (isOfficialCatalogue(record.id)) return record;
   // 受信任的内部懒加载：用 known record 的规范 source 拉取，并以 record.id 作为 trustedId，
   // 使官方 id 只能由本来就是该官方 id 的记录刷新得到。
   return await addMarketplace({
@@ -419,11 +422,8 @@ export async function addMarketplace(input: {
   let knownMarketplaceActivation: KnownMarketplaceActivation | undefined;
   let marketplaceActivation: AtomicDirectoryActivation | undefined;
   try {
-    // Claude 官方目录与图标映射并行获取；图标只是展示增强，失败时会回退本地缓存或空映射。
-    const iconSourcesPromise =
-      input.trustedId === CLAUDE_OFFICIAL_MARKETPLACE
-        ? loadClaudePluginIconSources(input.storageRoot, operationSignal)
-        : null;
+    // fork(zai-silence): the icon map for Claude's catalogue is published on Z.ai's CDN and is never fetched
+    const iconSourcesPromise: Promise<Map<string, string>> | null = null;
     loaded = await loadMarketplaceFromSource(input.source, input.storageRoot, {
       persist: false,
       signal: operationSignal,
@@ -710,7 +710,8 @@ export async function updateMarketplace(input: {
     throw new Error(`Marketplace not found: ${input.marketplace}`);
   }
   const updated: KnownMarketplaceRecord[] = [];
-  for (const record of selected) {
+  // fork(zai-silence): the official catalogue is never fetched from Z.ai's CDN
+  for (const record of refreshableMarketplaces(selected, input.marketplace)) {
     throwIfPluginOperationAborted(input.signal);
 
     // 受信任的刷新会重新拉取已知 marketplace 自带的 source；record.id 作为 trustedId，
