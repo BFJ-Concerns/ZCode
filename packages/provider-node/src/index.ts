@@ -10,5 +10,7 @@ export * from "./personal-provider-config-repository.js";
 export * from "./provider-config-file-codec.js";
 export * from "./provider-config-runtime.js";
 export * from "./provider-registry-runtime.js";
+// fork(model-listings): what reading each provider's model listing came to
+export * from "./fork/model-listings/index.js";
 export * from "./model-selection-facade.js";
 export * from "./runtime-paths.js";

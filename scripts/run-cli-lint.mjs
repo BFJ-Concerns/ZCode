@@ -27,6 +27,8 @@ async function main() {
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (!entry.isDirectory()) continue;
       const cwd = resolve(cli, parent, entry.name);
+      // fork(base): with package paths supplied, lint only the CLI packages in the build.
+      if (process.argv.length > 2 && !process.argv.includes(relative(root, cwd), 2)) continue;
       let manifest;
       try {
         manifest = JSON.parse(await readFile(resolve(cwd, "package.json"), "utf8"));
