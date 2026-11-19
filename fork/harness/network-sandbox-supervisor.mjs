@@ -47,7 +47,8 @@ const run = (command, args, input) =>
 function sealAndInstrumentNetwork() {
   run("ip", ["link", "set", "lo", "up"]);
   // Every address is local: an attempt anywhere reaches the packet filter and is then refused.
-  run("ip", ["route", "add", "local", "default", "dev", "lo"]);
+  // Use a loopback source so the rejection also has a route back to the socket.
+  run("ip", ["route", "add", "local", "default", "dev", "lo", "src", LOOPBACK]);
   run("ip", ["-6", "route", "add", "local", "default", "dev", "lo"]);
   run(
     "nft",
@@ -63,6 +64,11 @@ function sealAndInstrumentNetwork() {
         ip daddr != 127.0.0.0/8 meta l4proto udp add @udp4 { ip daddr . udp dport }
         ip6 daddr != ::1 tcp flags syn / syn,ack add @tcp6 { ip6 daddr . tcp dport }
         ip6 daddr != ::1 meta l4proto udp add @udp6 { ip6 daddr . udp dport }
+
+        ip daddr != 127.0.0.0/8 meta l4proto tcp reject with tcp reset
+        ip6 daddr != ::1 meta l4proto tcp reject with tcp reset
+        ip daddr != 127.0.0.0/8 reject
+        ip6 daddr != ::1 reject
       }
     }`,
   );

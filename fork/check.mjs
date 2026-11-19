@@ -38,10 +38,11 @@ const insideCliWorkspace = (directory) =>
 
 // Upstream lints the CLI workspace package by package, and accepts the line counts of
 // the over-long files it ships unchanged. Its script starts pnpm as a Node script.
-run(process.execPath, [join(REPOSITORY_ROOT, "scripts", "run-cli-lint.mjs")], {
-  cwd: CLI_WORKSPACE,
-  env: { npm_execpath: PNPM_AS_NODE_SCRIPT },
-});
+run(
+  process.execPath,
+  [join(REPOSITORY_ROOT, "scripts", "run-cli-lint.mjs"), ...packages.filter(insideCliWorkspace)],
+  { cwd: CLI_WORKSPACE, env: { npm_execpath: PNPM_AS_NODE_SCRIPT } },
+);
 // The packages outside that workspace, and the fork's own directory, take the root lint.
 pnpm(["exec", "oxlint", "fork", ...packages.filter((directory) => !insideCliWorkspace(directory))]);
 
