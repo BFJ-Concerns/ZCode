@@ -198,3 +198,50 @@ works in a fresh worktree and installs and builds what it needs.
 Upstream's own unit tests, architecture checks and whole-repository `typecheck` are not
 gates here: they cover surfaces the fork does not build and a process it does not
 follow.
+
+## Bringing in an upstream release
+
+`main` holds upstream's releases exactly as published, and `fork` is the release it is
+built on plus one commit for each difference. To bring in a newer release, run this
+from a checkout of the fork:
+
+```sh
+node fork/bring-in-release.mjs v3.19.0        # a tag, or the release's commit on main
+```
+
+The process makes a worktree at `<repository>-Worktrees/bring-in-<release>` beside the
+repository, on a branch of the same name cut from the release. It replays the fork's
+differences there one at a time, in the fork's order, and runs both gates after each
+one. The first difference that conflicts with the release or fails a gate is therefore
+the one the release broke.
+
+- **Every difference replayed and proven:** `fork` moves to the result and the worktree
+  and its branch are removed. If `fork` is checked out somewhere, it is left alone and
+  the result waits on the branch.
+- **A difference broken:** the process stops there. `fork` stays where it was, and the
+  worktree holds the replay as far as it got. A conflicting difference is left mid
+  cherry-pick; a difference that failed a gate is the branch's last commit, and the
+  gates' output is in the log the account names.
+
+Either way the process prints an account of the release for the owner: what it did to
+each difference, what was proven at each step, what it changed in the packages the
+command line builds from, and which changed packages hold none of the fork's code or
+joins. `--account <file>` also writes the account to a file.
+
+The process tells differences apart by their names (see [Differences](#differences)).
+A later commit that carries only names an earlier difference holds is a repair of that
+difference, and is folded into its commit as the release is brought in. A commit that
+carries no name belongs to `base`. A commit that changes two differences together
+cannot be attributed to either, so the process stops before replaying anything and
+names the commit.
+
+To rework a broken difference, fix it in the worktree: resolve the conflict and
+`git cherry-pick --continue`, or amend the commit. Then run the same command again. It
+gates the reworked step and carries on with the next difference. Rework may change how
+a difference is done but not what it promises, and it may not weaken its rungs; a change
+to either goes to the owner. When upstream comes to provide what a difference added, the
+difference keeps its rungs and loses its code.
+
+The process never pushes. Moving `fork` rewrites its history, so it is published with a
+push that replaces `fork` on origin only if origin still holds the fork the release
+was brought into; the account gives the command.
