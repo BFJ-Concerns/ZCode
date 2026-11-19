@@ -623,8 +623,15 @@ function resume(state) {
       cwd: state.worktree,
     }),
   );
-  if (steps.length > saved.differences.length) {
-    throw new Refusal(`${saved.intakeBranch} holds more commits than the fork has differences.`);
+  // Every step up to the one that stopped has its commit; a commit past it is rework
+  // made as a commit of its own, and would be taken for the next difference.
+  const reached = saved.differences.filter((d) => d.step.status !== "pending").length;
+  if (steps.length > reached) {
+    throw new Refusal(
+      `${saved.intakeBranch} holds ${steps.length - reached} commit(s) past the step that ` +
+        "stopped. Each difference is one commit, so fold the rework into that step's commit " +
+        "(git reset --soft HEAD~1, then git commit --amend), then run this again.",
+    );
   }
   Object.assign(state, saved, { gates: state.gates, outcome: "running", stopReason: undefined });
   state.differences.forEach((difference, index) => {

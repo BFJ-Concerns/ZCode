@@ -242,7 +242,7 @@ test("a release that fails the gates with a difference replayed stops at that di
   assert.match(account, /\*\*beta\*\*: not reached\./);
 });
 
-test("rework left uncommitted is refused, and the fork stays where it was", (t) => {
+test("rework left uncommitted, or committed apart from its step, is refused until folded in", (t) => {
   const { root, repository, forkTip } = forkAndRelease(t, (repository) => {
     commit(repository, "chore: sync source v2.0.0", {
       "app/src/a.ts": withLine(numbered("a"), 9, "a 9 gate fails"),
@@ -261,7 +261,16 @@ test("rework left uncommitted is refused, and the fork stays where it was", (t) 
   assert.equal(git(repository, "rev-parse", "fork"), forkTip);
   assert.equal(existsSync(worktree), true);
 
-  git(worktree, "commit", "--quiet", "--all", "--amend", "--no-edit");
+  // Committed as a commit of its own, the fix would be taken for beta's step.
+  git(worktree, "commit", "--quiet", "--all", "--message", "alpha: fix for v2.0.0");
+  const separate = bringIn(repository);
+
+  assert.equal(separate.exitCode, 2, `${separate.account}${separate.stderr}`);
+  assert.match(separate.stderr, /holds 1 commit\(s\) past the step that stopped/);
+  assert.equal(git(repository, "rev-parse", "fork"), forkTip);
+
+  git(worktree, "reset", "--quiet", "--soft", "HEAD~1");
+  git(worktree, "commit", "--quiet", "--amend", "--no-edit");
   const resumed = bringIn(repository);
 
   assert.equal(resumed.exitCode, 0, `${resumed.account}${resumed.stderr}`);
