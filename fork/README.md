@@ -113,3 +113,80 @@ not apply to fork work: no specification under `docs/` first, no
 comments in Chinese. A difference is specified by the contract in the annexe, proved by
 its rungs and gated by the two commands below. Comments and messages the fork writes are
 in English.
+
+## Proof
+
+Each difference is proved by **rungs**: checks that drive the built `zcode` from outside
+and observe what arrives at a receiver. The annexe's `VERIFICATION.md` says what each
+rung must observe; this section says how one is written and run.
+
+```sh
+node fork/rungs.mjs                    # build, then every rung
+node fork/rungs.mjs model-listings     # only rung files whose path contains the text
+node fork/rungs.mjs --no-build base    # against the build already in place
+```
+
+A rung file is `fork/rungs/<difference>/<subject>.rung.mjs`: plain JavaScript using
+`node:test`, importing nothing but Node and `fork/harness/`. Fixtures that only one
+difference needs (a listing in some provider's shape, say) sit beside its rungs.
+`fork/rungs/base/receivers.rung.mjs` is the one to copy.
+
+### Where a rung runs
+
+`fork/rungs.mjs` runs each rung file in a sealed sandbox of its own, built from Linux
+namespaces:
+
+- The network is a loopback interface and nothing else. The stand-ins a rung starts are
+  the only hosts there are; no packet can leave the machine.
+- Everything that tries to leave is refused at once and recorded, whichever process
+  tried: `zcode`, a command the agent ran, or the rung. Host names are recorded when they
+  are looked up, and every TCP or UDP destination outside loopback when a packet is sent.
+- `/tmp` and `/run` are empty and private, so the homes a rung creates vanish with the
+  sandbox and no socket on the machine can be reached.
+- The rung and every `zcode` it launches run as you, not as root, and every process
+  left running dies when the file finishes.
+
+Rung files run side by side, so a file cannot see another file's stand-ins, homes or
+record. Tests within a file run one after another and share its sandbox.
+
+### The harness
+
+| Module                        | What a rung gets from it                                                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `harness/owner-home.mjs`      | A fresh home directory holding the owner's configuration files, and the environment that makes `zcode` use it.                                    |
+| `harness/model-provider.mjs`  | A stand-in provider: serves a model listing, answers model requests from a script (`say`, `callTool`, `fail`, `hang`), records every request.     |
+| `harness/searxng.mjs`         | A stand-in SearXNG instance: answers searches, records every query.                                                                               |
+| `harness/launcher.mjs`        | Runs `zcode` as Ensemble's command-line engine runs a worker: prompt as one argument, stdout apart from stderr, exit status, a signal to stop it. |
+| `harness/network-sandbox.mjs` | The sandbox's record of attempts to leave, and names pointed at a stand-in.                                                                       |
+
+### Writing a rung
+
+- One `test` for each observation `VERIFICATION.md` asks for, named for what is
+  observed, so a failure reads as the broken promise.
+- Observe at the receiver: the requests the provider recorded, the queries SearXNG
+  recorded, the sandbox's attempts, the run's output and exit status. A rung never
+  imports the fork's source, and looks inside the home only when the promise is about
+  what is stored there.
+- Wait for the thing itself: `run.event(...)` for a line `zcode` prints,
+  `provider.request(...)` for a request to arrive, `run.outcome` for the exit. Never
+  sleep and never poll with a time limit of your own; a test that has not finished in
+  two minutes is failed by the runner.
+- Each test creates its own home and stand-ins and hands them to `t.after`. A file whose
+  tests read the sandbox's record starts each test with `beforeEach(forgetAttempts)`.
+- When a rung needs something of the harness that any difference could use (another
+  kind of reply, a driver for the interactive terminal UI), it goes into the harness
+  module it belongs to, in the commit of the difference that first needs it.
+
+## The gates
+
+Two commands gate every change to the fork and every upstream release brought in. Each
+works in a fresh worktree and installs and builds what it needs.
+
+| Command               | What it runs                                                                                                                           | What it needs installed                                                                                                                                   |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node fork/check.mjs` | The build; the type check and upstream's lint of `@zcode/cli` and the packages it depends on; lint and format of the fork's own files. | Node and pnpm as in `mise.toml`; the npm registry or a warm pnpm store.                                                                                   |
+| `node fork/rungs.mjs` | The build, then every rung.                                                                                                            | The same, on Linux with unprivileged user namespaces allowed, and `unshare` and `mount` (util-linux), `ip` (iproute2) and `nft` (nftables) on the `PATH`. |
+
+Upstream's own unit tests, architecture checks and whole-repository `typecheck` are not
+gates here: they cover surfaces the fork does not build and a process it does not
+follow.
