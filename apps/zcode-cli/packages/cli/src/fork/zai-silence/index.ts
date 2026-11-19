@@ -1,6 +1,7 @@
-import { installConnectionGuard } from "./connection-guard.js";
+import { installConnectionGuard, type ConnectionGuardOptions } from "./connection-guard.js";
 import { readConfiguredProviderHosts } from "./configured-providers.js";
 import { reportRefusal } from "./refusal-report.js";
+import { installRequestGuard } from "./request-guard.js";
 import { normalizeHost } from "./zai-hosts.js";
 
 export { withoutSignInCommands } from "./sign-in-commands.js";
@@ -12,7 +13,7 @@ export { withoutSignInCommands } from "./sign-in-commands.js";
  * processes of their own and are not affected.
  */
 export function refuseUnconfiguredZaiHosts(argv: readonly string[]): void {
-  installConnectionGuard({
+  const guard: ConnectionGuardOptions = {
     decide: (host) => {
       const configured = readConfiguredProviderHosts(process.env);
       if (!configured.readable) return { allowed: false, note: configured.reason };
@@ -26,5 +27,7 @@ export function refuseUnconfiguredZaiHosts(argv: readonly string[]): void {
         stderr: process.stderr,
         unreadableProviderConfiguration: note,
       }),
-  });
+  };
+  installConnectionGuard(guard);
+  installRequestGuard(guard);
 }

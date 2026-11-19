@@ -26,7 +26,8 @@ const INSTALLED = Symbol.for("zcode.fork.zai-silence.connection-guard");
  *
  * Every client in a Node process reaches the network through `net.Socket#connect`:
  * `http`, `https`, `tls`, the built-in `fetch`, and the WebSocket and SDK clients built on
- * them. The guard sits there, so no request site has to know about it. A refused socket
+ * them. The guard sits there, so no request site has to know about it. (Through an HTTP
+ * proxy the socket goes to the proxy; `request-guard.ts` covers that case.) A refused socket
  * fails as an unreachable host does, with an error whose code is `REFUSED_ERROR_CODE`,
  * and the caller handles it on the path it already has for a host that cannot be reached.
  *
@@ -48,17 +49,21 @@ export function installConnectionGuard(options: ConnectionGuardOptions): void {
       return (connect as (...connectArgs: unknown[]) => net.Socket).apply(this, args);
     }
     options.report(destination, decision.note);
-    const error = Object.assign(
-      new Error(
-        `Refused a connection to ${describe(destination)}: Z.ai operates it and it is not a configured model provider.`,
-      ),
-      { code: REFUSED_ERROR_CODE },
-    );
     // Asynchronously, as a failed connection would be: the caller attaches its error
     // listener after connect() returns.
-    process.nextTick(() => this.destroy(error));
+    process.nextTick(() => this.destroy(refusalError(destination)));
     return this;
   } as typeof connect;
+}
+
+/** The error a refused connection or request fails with. */
+export function refusalError(destination: Destination): Error {
+  return Object.assign(
+    new Error(
+      `Refused a connection to ${describe(destination)}: Z.ai operates it and it is not a configured model provider.`,
+    ),
+    { code: REFUSED_ERROR_CODE },
+  );
 }
 
 export function describe({ host, port }: Destination): string {

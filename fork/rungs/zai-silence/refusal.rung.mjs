@@ -3,13 +3,15 @@
  * request it (here, an MCP server in the owner's configuration) is refused and the
  * attempt reported, unless the owner has configured that host as a model provider, in
  * which case the request is made. The name is pointed at the stand-in, so a request the
- * fork makes arrives there and one it refuses does not.
+ * fork makes arrives there and one it refuses does not. Through the owner's HTTP proxy the
+ * same holds: the proxy is never asked for a Z.ai host.
  */
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, test } from "node:test";
+import { startHttpProxy } from "../../harness/http-proxy.mjs";
 import { launch } from "../../harness/launcher.mjs";
 import { say, startModelProvider } from "../../harness/model-provider.mjs";
 import { attempts, forgetAttempts, pointNameAtStandIn } from "../../harness/network-sandbox.mjs";
@@ -95,4 +97,49 @@ test("the same request is made when the owner has configured that host as a mode
     "the planted request was made",
   );
   assert.deepEqual(await reportedRefusals(home), [], "nothing was refused");
+});
+
+/** The owner's CLI configuration sending everything but loopback through `proxy`, with a planted MCP server. */
+const proxiedPlantedMcpServer = (proxy, url) => ({
+  ...plantedMcpServer(url),
+  network: { httpProxy: proxy.url, noProxy: "127.0.0.1,localhost" },
+});
+
+async function runThroughProxy(t, mcpHost) {
+  const provider = await startModelProvider({ script: () => say("Answered.") });
+  t.after(() => provider.close());
+  const proxy = await startHttpProxy();
+  t.after(() => proxy.close());
+  const home = await createOwnerHome({
+    providerConfig: providerConfiguration({ baseUrl: provider.baseUrl }),
+    cliConfig: proxiedPlantedMcpServer(proxy, `https://${mcpHost}${MCP_PATH}`),
+  });
+  t.after(() => home.remove());
+  const run = launch({ home, prompt: "Say anything." });
+  t.after(() => run.dispose());
+  return { home, proxy, outcome: await run.outcome };
+}
+
+test("through the owner's HTTP proxy, a planted request reaches the proxy", async (t) => {
+  const { proxy, outcome } = await runThroughProxy(t, "mcp.example");
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  assert.ok(proxy.destinations.includes("mcp.example:443"), JSON.stringify(proxy.destinations));
+});
+
+test("through the owner's HTTP proxy, a request to a Z.ai host is refused and reported", async (t) => {
+  const { home, proxy, outcome } = await runThroughProxy(t, ZAI_HOST);
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  assert.equal(outcome.result.response, "Answered.", "the run goes on without the refused server");
+  assert.deepEqual(
+    proxy.destinations.filter((destination) => destination.startsWith(`${ZAI_HOST}:`)),
+    [],
+    "the proxy was never asked for the Z.ai host",
+  );
+  assert.deepEqual(
+    (await reportedRefusals(home)).map(({ host, port }) => ({ host, port })),
+    [{ host: ZAI_HOST, port: 443 }],
+    "the attempt is reported once",
+  );
 });
