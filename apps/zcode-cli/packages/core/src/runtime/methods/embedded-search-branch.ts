@@ -39,6 +39,8 @@ export function refreshBranchAwareBuiltInTools(runtime: AgentRuntimeInternal): v
     includeDynamicWorkflow: resolveRuntimeDynamicWorkflowToolsIncluded(runtime),
     // 会话工具同名两种实现，刷新必须沿用首次装配选定的运行位置，不能回落到另一种。
     sessionControlKind: runtime.sessionControlKind,
+    // fork(searxng-search): keeps the same endpoint across tool registration refreshes
+    searxngUrl: runtime.config.searxngUrl,
     allowedTools: resolveBuiltInToolAllowlist(runtime.config),
     disallowedTools: runtime.config.toolDisallowlist,
     silentDuplicateWarnings: true,
