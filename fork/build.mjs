@@ -9,8 +9,6 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
-import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -34,18 +32,20 @@ export function run(command, args, { cwd = REPOSITORY_ROOT, env = {} } = {}) {
 // and fork/rungs.mjs, so pnpm runs with the hooks left uninstalled.
 export const pnpm = (args) => run("pnpm", args, { env: { HUSKY: "0" } });
 
-const modifiedAt = (path) =>
-  statSync(join(REPOSITORY_ROOT, path), { throwIfNoEntry: false })?.mtimeMs;
-
-/** Installs the dependencies the lockfile names, unless the last install is newer than the lockfile. */
+/** Installs the CLI dependencies and the tools declared by both workspace roots. */
 export function install() {
-  const installedAt = modifiedAt("node_modules/.modules.yaml");
-  const lockedAt = modifiedAt("pnpm-lock.yaml");
-  if (installedAt !== undefined && lockedAt !== undefined && installedAt >= lockedAt) return;
+  // The upstream hoisted linker installs every importer even with a filter.
+  // Public hoisting keeps bundled CLI externals such as koffi resolvable at runtime.
   pnpm([
     "install",
     "--frozen-lockfile",
+    "--config.node-linker=isolated",
+    "--config.shamefully-hoist=true",
     "--config.confirmModulesPurge=false",
+    "--filter",
+    ".",
+    "--filter",
+    "./apps/zcode-cli",
     "--filter",
     CLI_AND_ITS_DEPENDENCIES,
   ]);
