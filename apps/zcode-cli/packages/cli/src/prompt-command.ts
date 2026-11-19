@@ -618,6 +618,9 @@ async function runPromptCommandCenterCommand(
     });
   }
 
+  // fork(unattended-run): waits while the command's background work can still wake the model; a woken turn's answer is the command's
+  const response = (await runEnding.waitWhileWakeable(app.runtime, abortSignal)) ?? result.response;
+
   if (options.memoryBench) {
     await app.runtime.drainMemoryExtractions(null);
     abortSignal.throwIfAborted();
@@ -633,11 +636,12 @@ async function runPromptCommandCenterCommand(
         sessionId: String(app.sessionId),
         ...(nextTraceId ? { traceId: nextTraceId } : {}),
       },
-      result.response,
+      response,
     );
   }
 
-  ctx.stdout.write(`${result.response}\n`);
+  // fork(unattended-run): the answer after any woken turn
+  ctx.stdout.write(`${response}\n`);
   // fork(unattended-run): says on stderr, and in the exit status, how a command that did not finish ended
   runEnding.reportInText(ctx.stderr);
   return runEnding.exitCode();

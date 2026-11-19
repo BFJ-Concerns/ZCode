@@ -133,6 +133,35 @@ test("a workflow keeps the run alive until the model is woken by its end", async
   assertWokenAfterTheWork(outcome, provider);
 });
 
+test("a background command started under /goal keeps the run alive until the model is woken by its end", async (t) => {
+  const { provider, home } = await ownerWithProvider(t, (request) => {
+    if (mentions(request, FINISHED_MARKER)) return say("Woken by the finished work.");
+    if (toolResultCount(request) === 0) {
+      return callTool("Bash", {
+        command: WAIT_FOR_RELEASE,
+        description: "Wait in the background",
+        run_in_background: true,
+      });
+    }
+    return say("Started.");
+  });
+
+  const run = launch({ home, prompt: "/goal Start the work in the background." });
+  t.after(() => run.dispose());
+  await provider.request((request) => mentions(request, "Command running in background"));
+  assert.ok(run.running(), "the run is still running while its background command runs");
+  await release(home);
+  const outcome = await run.outcome;
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  assert.equal(outcome.result.outcome, "finished");
+  assert.equal(outcome.result.response, "Woken by the finished work.");
+  assert.ok(
+    provider.modelRequests().some((request) => mentions(request, FINISHED_MARKER)),
+    "the model is woken with the finished work's result",
+  );
+});
+
 test("a scheduled automation the model asks for does not hold the run open", async (t) => {
   const { provider, home } = await ownerWithProvider(t, [
     callTool("CronCreate", {

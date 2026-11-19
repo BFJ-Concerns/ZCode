@@ -87,6 +87,13 @@ export interface RunEnding {
    * Without `runtime` nothing can wake the model and the run closes at once.
    */
   closeAfterError: (cause: unknown, output: ClosingOutput) => Promise<number>;
+  /**
+   * Waits while anything the run started can still wake the model: a background
+   * command, subagent or workflow still running, or a turn one of them queued. Has no
+   * time limit; ends at once when the run is cancelled. Settles with the text of the
+   * last of the run's turns that finished while it waited, if one did.
+   */
+  waitWhileWakeable: (runtime: unknown, signal: AbortSignal) => Promise<string | undefined>;
   /** Prints a closing result for `response` in a JSON format, and returns the exit status. */
   writeResult: (
     output: Omit<ClosingOutput, "runtime" | "signal">,
@@ -136,6 +143,18 @@ export const createRunEnding = (): RunEnding => {
     if (ending.outcome === "cancelled") stderr.write(`Cancelled${signal ? ` by ${signal}` : ""}\n`);
   };
 
+  const waitWhileWakeable = async (
+    runtime: unknown,
+    abortSignal: AbortSignal,
+  ): Promise<string | undefined> => {
+    const facts = readHeadlessRuntimeFacts(runtime);
+    if (!facts || signal) return undefined;
+    const endedBefore = turns.length;
+    await waitForHeadlessWorkflowSettle({ runtime: facts, signal: abortSignal });
+    const woken = turns.slice(endedBefore).findLast((turn) => turn.outcome === "finished");
+    return woken?.response;
+  };
+
   const writeResult = (
     output: Omit<ClosingOutput, "runtime" | "signal">,
     response: string | undefined,
@@ -178,9 +197,8 @@ export const createRunEnding = (): RunEnding => {
       // A turn that failed has already said why in its own event, and a turn its
       // background work wakes may still finish the run. Any other error is the run's own.
       if (lastTurn()?.outcome !== "failed") error ??= messageOf(cause);
-      const runtime = output.runtime === undefined ? undefined : readHeadlessRuntimeFacts(output.runtime);
-      if (runtime && output.signal && !signal) {
-        await waitForHeadlessWorkflowSettle({ runtime, signal: output.signal });
+      if (output.runtime !== undefined && output.signal) {
+        await waitWhileWakeable(output.runtime, output.signal);
       }
       const ending = fields();
       const response = ending.outcome === "finished" ? lastTurn()?.response : undefined;
@@ -195,6 +213,7 @@ export const createRunEnding = (): RunEnding => {
       return exitCode();
     },
     writeResult: (output, response) => writeResult(output, response),
+    waitWhileWakeable,
     afterResult: async (cleanup) => {
       await printed.promise;
       await cleanup();
