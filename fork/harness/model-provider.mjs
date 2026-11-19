@@ -57,6 +57,7 @@ export const hang = () => ({ kind: "hang" });
  * @param {unknown} [options.listing]
  *   The JSON body served at `GET /v1/models`, in whichever provider's shape the rung
  *   is proving. Left out, the listing answers 404: a provider with no listing.
+ *   `hang()` accepts the listing request and never answers it.
  * @param {Reply[] | ((request: RecordedRequest, index: number) => Reply)} [options.script]
  *   The reply to each model request: a list consumed in arrival order, or a function
  *   of the request for a rung whose replies depend on what the fork sent. A request
@@ -87,6 +88,7 @@ export async function startModelProvider({ listing, script = [] } = {}) {
     const { pathname } = new URL(recorded.path, `http://${LOOPBACK}`);
     if (recorded.method === "GET" && pathname === "/v1/models") {
       if (listing === undefined) return sendJson(response, 404, errorBody("no model listing"));
+      if (listing?.kind === "hang") return undefined;
       return sendJson(response, 200, listing);
     }
     if (recorded.method === "POST" && pathname === "/v1/chat/completions") {

@@ -9,6 +9,7 @@ import {
   NodeProviderConfigRuntime,
   type NodeProviderConfigRuntimeOptions,
 } from "./provider-config-runtime.js";
+import { withModelListings } from "./fork/model-listings/index.js";
 
 export interface NodeProviderRegistryRuntimeOptions extends NodeProviderConfigRuntimeOptions {
   readonly accountSource?: ProviderSource<AccountProviderConfigSnapshot>;
@@ -33,7 +34,8 @@ export class NodeProviderRegistryRuntime {
       options.accountSource ??
       new MutableAccountProviderConfigSource();
     this.registryService = new ProviderRegistryService({
-      configSource: this.configService,
+      // fork(model-listings): each configured provider's model listing joins the registry's configuration
+      configSource: withModelListings(this.configService),
       accountSource: this.#accountSource,
     });
   }
