@@ -99,6 +99,33 @@ test("the same request is made when the owner has configured that host as a mode
   assert.deepEqual(await reportedRefusals(home), [], "nothing was refused");
 });
 
+test("a host the owner configured through a built-in provider template is reached", async (t) => {
+  const provider = await startModelProvider({ script: () => say("Answered.") });
+  t.after(() => provider.close());
+  await pointNameAtStandIn(ZAI_HOST);
+  // The stand-in stays the default; the owner also added Z.ai's standard API from its
+  // built-in template, giving a key and no base URL of their own, which reaches api.z.ai.
+  const providerConfig = providerConfiguration({ baseUrl: provider.baseUrl });
+  providerConfig.config.providerConfigRules.providerRules.push({
+    providerId: "zai-from-template",
+    providerName: "Z.ai",
+    templateId: "zai-standard-api",
+    config: { group: "standard-personal", access: { type: "api-key", apiKey: "owner-key" } },
+  });
+  const home = await createOwnerHome({
+    providerConfig,
+    cliConfig: plantedMcpServer(`http://${ZAI_HOST}:${provider.port}${MCP_PATH}`),
+  });
+  t.after(() => home.remove());
+  const run = launch({ home, prompt: "Say anything." });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  assert.notDeepEqual(provider.requests.filter(isPlantedRequest), [], "the request was made");
+  assert.deepEqual(await reportedRefusals(home), [], "nothing was refused");
+});
+
 /** The owner's CLI configuration sending everything but loopback through `proxy`, with a planted MCP server. */
 const proxiedPlantedMcpServer = (proxy, url) => ({
   ...plantedMcpServer(url),

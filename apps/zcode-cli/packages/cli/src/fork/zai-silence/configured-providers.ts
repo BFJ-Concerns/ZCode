@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   PERSONAL_PROVIDER_CONFIG_FILE_NAME,
+  ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE_ENV,
+  ZCODE_BUILTIN_PROVIDER_CONFIG_FILE_ENV,
   ZCODE_PERSONAL_PROVIDER_CONFIG_FILE_ENV,
 } from "@zcode/provider-node";
 import { normalizeHost } from "./zai-hosts.js";
@@ -24,8 +26,10 @@ export function personalProviderConfigPath(env: NodeJS.ProcessEnv): string {
 
 /**
  * The hosts of the model providers the owner has configured, read afresh on each call so
- * that a provider added while the process runs is honoured at once. The built-in
- * provider rules are not the owner's configuration and are never read here.
+ * that a provider added while the process runs is honoured at once. A provider the owner
+ * added from one of the built-in templates, with no base URL of its own, takes the
+ * template's, as the provider resolver does. The built-in providers themselves are not
+ * the owner's configuration and are never counted.
  */
 export function readConfiguredProviderHosts(env: NodeJS.ProcessEnv): ProviderHosts {
   const path = personalProviderConfigPath(env);
@@ -44,15 +48,63 @@ export function readConfiguredProviderHosts(env: NodeJS.ProcessEnv): ProviderHos
   } catch (error) {
     return { readable: false, reason: `${path}: ${(error as Error).message}` };
   }
-  return { readable: true, hosts: new Set(providerBaseUrls(parsed).flatMap(hostOf)) };
+  const templateBaseUrls = lazily(() => readTemplateBaseUrls(env));
+  const baseUrls = rulesOf(parsed, "providerRules").flatMap((rule) => {
+    const own = baseUrlOf(rule);
+    if (own !== undefined) return [own];
+    const templateId = field(rule, "templateId");
+    const inherited =
+      typeof templateId === "string" ? templateBaseUrls().get(templateId) : undefined;
+    return inherited === undefined ? [] : [inherited];
+  });
+  return { readable: true, hosts: new Set(baseUrls.flatMap(hostOf)) };
 }
 
-function providerBaseUrls(file: unknown): string[] {
-  const rules = field(field(field(file, "config"), "providerConfigRules"), "providerRules");
-  if (!Array.isArray(rules)) return [];
-  return rules
-    .map((rule) => field(field(field(rule, "config"), "api"), "baseUrl"))
-    .filter((baseUrl): baseUrl is string => typeof baseUrl === "string");
+/**
+ * The base URL of each built-in provider template, from the built-in rules the provider
+ * runtime reads: the active copy the CLI entry prepared, or the copy the build carries.
+ * Neither is readable before the entry has prepared them, and then no template resolves.
+ */
+function readTemplateBaseUrls(env: NodeJS.ProcessEnv): ReadonlyMap<string, string> {
+  for (const name of [
+    ZCODE_BUILTIN_PROVIDER_CONFIG_FILE_ENV,
+    ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE_ENV,
+  ]) {
+    const path = env[name]?.trim();
+    if (!path) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      // An unreadable copy resolves nothing; the next one may.
+      continue;
+    }
+    return new Map(
+      rulesOf(parsed, "templateRules").flatMap((rule) => {
+        const templateId = field(rule, "templateId");
+        const baseUrl = baseUrlOf(rule);
+        return typeof templateId === "string" && baseUrl !== undefined
+          ? [[templateId, baseUrl] as const]
+          : [];
+      }),
+    );
+  }
+  return new Map();
+}
+
+function rulesOf(file: unknown, list: "providerRules" | "templateRules"): unknown[] {
+  const rules = field(field(field(file, "config"), "providerConfigRules"), list);
+  return Array.isArray(rules) ? rules : [];
+}
+
+function baseUrlOf(rule: unknown): string | undefined {
+  const baseUrl = field(field(field(rule, "config"), "api"), "baseUrl");
+  return typeof baseUrl === "string" ? baseUrl : undefined;
+}
+
+function lazily<Value>(read: () => Value): () => Value {
+  let value: { readonly read: Value } | undefined;
+  return () => (value ??= { read: read() }).read;
 }
 
 function field(value: unknown, name: string): unknown {
