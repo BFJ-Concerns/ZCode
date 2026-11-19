@@ -52,12 +52,15 @@ const OUTPUT_POLL_MS = 20;
 /**
  * @param {object} options
  * @param {import("./owner-home.mjs").OwnerHome} options.home
- * @param {string} options.prompt
- * @param {string[]} [options.args]  Further arguments, placed before the prompt.
+ * @param {string} [options.prompt]
+ * @param {string[]} [options.command]
+ *   A command to run in place of a prompt, e.g. `["models"]`. It prints its own
+ *   output rather than stream-json, so read `stdout` and not `events`.
+ * @param {string[]} [options.args]  Further arguments, placed before the prompt or command.
  * @param {string} [options.cwd]     Defaults to the home's empty workspace.
  * @returns {Run}
  */
-export function launch({ home, prompt, args = [], cwd = home.workspace }) {
+export function launch({ home, prompt, command, args = [], cwd = home.workspace }) {
   requireSandbox();
   if (!existsSync(ZCODE_ENTRY)) {
     throw new Error(`${ZCODE_ENTRY} is not built; run \`node fork/build.mjs\` first.`);
@@ -72,17 +75,19 @@ export function launch({ home, prompt, args = [], cwd = home.workspace }) {
 
   const child = spawn(
     process.execPath,
-    [
-      ZCODE_ENTRY,
-      "--cwd",
-      cwd,
-      "--output-format",
-      "stream-json",
-      "--no-color",
-      ...args,
-      "--prompt",
-      prompt,
-    ],
+    command
+      ? [ZCODE_ENTRY, "--cwd", cwd, "--no-color", ...args, ...command]
+      : [
+          ZCODE_ENTRY,
+          "--cwd",
+          cwd,
+          "--output-format",
+          "stream-json",
+          "--no-color",
+          ...args,
+          "--prompt",
+          prompt,
+        ],
     {
       cwd,
       env: home.env,
