@@ -3,6 +3,8 @@ import { readConfiguredProviderHosts } from "./configured-providers.js";
 import { reportRefusal } from "./refusal-report.js";
 import { normalizeHost } from "./zai-hosts.js";
 
+export { withoutSignInCommands } from "./sign-in-commands.js";
+
 
 /**
  * Makes this `zcode` process refuse, and report, every connection to a host Z.ai operates

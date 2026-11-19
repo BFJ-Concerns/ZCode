@@ -1,4 +1,5 @@
 import { ZCODE_OFFICIAL_PLUGIN_MARKETPLACE } from "@zcode/contracts";
+import { withoutSitePublishing } from "../fork/zai-silence/index.js";
 
 // 内置插件的商店信息 seed（原样写入官方 marketplace.json 的条目 raw，键名与 CDN 目录
 // schema 一致：displayName_i18n / examplePrompts_i18n 等），解析复用 adapter 的
@@ -125,7 +126,8 @@ export const OFFICIAL_DESIGN_REQUIRED_SEED_PATHS = [
   "hooks/design-rules",
 ] as const;
 
-export const OFFICIAL_PLUGIN_DEFINITIONS: readonly OfficialPluginDefinition[] = [
+// fork(zai-silence): site publishing needs a Z.ai account, so it is not bundled
+export const OFFICIAL_PLUGIN_DEFINITIONS: readonly OfficialPluginDefinition[] = withoutSitePublishing([
   {
     // 交互视图默认关闭，避免默认注入固定上下文；旧开关由配置迁移关闭一次。
     defaultEnabled: false,
@@ -528,7 +530,7 @@ export const OFFICIAL_PLUGIN_DEFINITIONS: readonly OfficialPluginDefinition[] = 
     ],
     version: "0.5.0",
   },
-];
+]);
 
 // 在 official plugin 定义里标了 defaultEnabled: true 的, 拼成 `<name>@<marketplace>` 形式,
 // 透传给 adapter 让它在用户没显式配置时默认开启 (内容型 plugin 才适用)。

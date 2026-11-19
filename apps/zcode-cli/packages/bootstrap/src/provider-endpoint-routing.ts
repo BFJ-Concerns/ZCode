@@ -1,4 +1,4 @@
-import { createConfig, type ConfigResult } from "@zcode/adapters/config";
+import { type ConfigResult } from "@zcode/adapters/config";
 import {
   createSharedZCodeCredentialStore,
   SHARED_ZCODE_CREDENTIAL_KEYS,
@@ -6,11 +6,11 @@ import {
 } from "@zcode/adapters/auth";
 import { createNodeHttpClientAdapter } from "@zcode/adapters/http";
 import { createProviderEndpointRoutingPort } from "@zcode/adapters/model";
-import { createNodeLoggerFactory } from "@zcode/adapters/logging";
 import { resolveRuntimeZCodeEndpointOrigin } from "@zcode/shared";
 import type { Logger, LoggerFactory, ProviderEndpointRoutingPort } from "@zcode/contracts";
 import type { ModelProviderSourceTitle } from "./model-config.js";
 import { createProviderEndpointRoutingSourceHeaders } from "./provider-endpoint-routing-source-headers.js";
+import { directProviderEndpoints } from "./fork/zai-silence/index.js";
 
 const processRoutingPorts = new Map<string, ProviderEndpointRoutingPort>();
 const delegatedRoutingPorts = new WeakMap<
@@ -85,27 +85,10 @@ export function resolveProcessProviderEndpointRoutingPort(
 }
 
 export function createDefaultProviderEndpointRoutingPort(
-  options: CreateDefaultProviderEndpointRoutingPortOptions,
+  _options: CreateDefaultProviderEndpointRoutingPortOptions,
 ): ProviderEndpointRoutingPort {
-  const env = options.env ?? process.env;
-  const configResult = createConfig({
-    env,
-    projectConfigPath: options.projectConfigPath,
-    skipUserConfig: options.skipUserConfig,
-    userConfigPath: options.userConfigPath,
-    workingDirectory: options.workingDirectory,
-  });
-  const loggerFactory = options.loggerFactory ?? createNodeLoggerFactory({ env });
-  const logger = loggerFactory.createLogger("zcode").child({
-    module: "bootstrap.provider_endpoint_routing",
-  });
-  return resolveProcessProviderEndpointRoutingPort({
-    appVersion: options.appVersion,
-    env,
-    logger,
-    network: configResult.config.network,
-    sourceTitle: options.sourceTitle,
-  });
+  // fork(zai-silence): model requests go to the endpoint the owner configured, never through ZCode's gateway
+  return directProviderEndpoints;
 }
 
 function routingRegistryKey(endpointOrigin: string, network: NetworkConfig): string {
