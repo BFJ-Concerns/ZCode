@@ -1,5 +1,5 @@
 import { ZCODE_OFFICIAL_PLUGIN_MARKETPLACE } from "@zcode/contracts";
-import { withoutSitePublishing } from "../fork/zai-silence/index.js";
+import { forkBundledPlugins } from "../fork/zai-silence/index.js";
 
 // 内置插件的商店信息 seed（原样写入官方 marketplace.json 的条目 raw，键名与 CDN 目录
 // schema 一致：displayName_i18n / examplePrompts_i18n 等），解析复用 adapter 的
@@ -126,8 +126,8 @@ export const OFFICIAL_DESIGN_REQUIRED_SEED_PATHS = [
   "hooks/design-rules",
 ] as const;
 
-// fork(zai-silence): site publishing needs a Z.ai account, so it is not bundled
-export const OFFICIAL_PLUGIN_DEFINITIONS: readonly OfficialPluginDefinition[] = withoutSitePublishing([
+// fork(zai-silence): site publishing is not bundled, and the plugins the fork changes carry a fork version
+export const OFFICIAL_PLUGIN_DEFINITIONS: readonly OfficialPluginDefinition[] = forkBundledPlugins([
   {
     // 交互视图默认关闭，避免默认注入固定上下文；旧开关由配置迁移关闭一次。
     defaultEnabled: false,

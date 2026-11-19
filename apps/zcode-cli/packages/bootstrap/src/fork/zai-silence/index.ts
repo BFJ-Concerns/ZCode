@@ -4,11 +4,30 @@ import type { ProviderEndpointRoutingPort } from "@zcode/contracts";
 /** ZCode Sites publishes a project to Z.ai's hosting and works only with a Z.ai account. */
 const SITE_PUBLISHING_PLUGIN = "zcode-site";
 
-/** The bundled plugins with site publishing taken out; nothing else does its job. */
-export function withoutSitePublishing<Definition extends { readonly name: string }>(
-  definitions: readonly Definition[],
-): readonly Definition[] {
-  return definitions.filter((definition) => definition.name !== SITE_PUBLISHING_PLUGIN);
+/** The bundled plugins whose files the fork changes: their setup no longer fetches fonts from Z.ai. */
+const PLUGINS_THE_FORK_CHANGES: ReadonlySet<string> = new Set(["documents", "pdf", "spreadsheets"]);
+
+/**
+ * Marks the version of a plugin the fork changes. A home seeds a bundled plugin once per
+ * version, so a home upstream already seeded at the same version would otherwise keep
+ * serving upstream's files.
+ */
+const FORK_VERSION_SUFFIX = "+fork.zai-silence";
+
+/**
+ * The plugins bundled with the fork: site publishing is taken out, since nothing else
+ * does its job, and each plugin the fork changes has a version of its own.
+ */
+export function forkBundledPlugins<
+  Definition extends { readonly name: string; readonly version: string },
+>(definitions: readonly Definition[]): readonly Definition[] {
+  return definitions
+    .filter((definition) => definition.name !== SITE_PUBLISHING_PLUGIN)
+    .map((definition) =>
+      PLUGINS_THE_FORK_CHANGES.has(definition.name)
+        ? { ...definition, version: `${definition.version}${FORK_VERSION_SUFFIX}` }
+        : definition,
+    );
 }
 
 /**
