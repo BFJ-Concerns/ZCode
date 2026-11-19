@@ -73,7 +73,6 @@ test("a signal stops a run that is waiting for the model", async (t) => {
   const outcome = await run.stop("SIGTERM");
 
   assert.notEqual(outcome.exitCode, 0, "a stopped run does not report success");
-  assert.equal(outcome.result, undefined, "a stopped run prints no result");
 });
 
 test("only the stand-ins can be reached, and every other attempt is recorded", async (t) => {

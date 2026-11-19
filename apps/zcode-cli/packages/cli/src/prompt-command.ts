@@ -42,6 +42,7 @@ import type {
   RunDependencies,
 } from "./cli-types.js";
 import { workspaceTrustCommandArgument } from "./hooks-trust-command.js";
+import { createRunEnding } from "./fork/unattended-run/index.js";
 
 /**
  * Does this run print a JSON summary at the end?
@@ -148,6 +149,8 @@ export const runPrompt = async (
     ReturnType<NonNullable<RunDependencies["startProcessProviderRegistryRuntime"]>>
   >;
   const abortController = new AbortController();
+  // fork(unattended-run): remembers how the run ended, for its result and exit status
+  const runEnding = createRunEnding();
   const cleanupTimeoutMs = Math.max(
     1,
     Math.trunc(deps.shutdownCleanupTimeoutMs ?? DEFAULT_CLI_CLEANUP_TIMEOUT_MS),
@@ -166,8 +169,13 @@ export const runPrompt = async (
     await closePromise;
   };
   const unregisterShutdownHandlers = registerCliShutdownHandlers({
-    abort: (signal) => abortController.abort(new Error(`CLI received ${signal}`)),
-    cleanup: closeApp,
+    abort: (signal) => {
+      // fork(unattended-run): a signal cancels the run
+      runEnding.cancelledBy(signal);
+      abortController.abort(new Error(`CLI received ${signal}`));
+    },
+    // fork(unattended-run): the run prints its result, saying it was cancelled, before the process exits
+    cleanup: () => runEnding.afterResult(closeApp),
     cleanupTimeoutMs: deps.shutdownCleanupTimeoutMs,
     exitProcess: deps.exitProcess,
     process: deps.shutdownProcess,
@@ -328,6 +336,8 @@ export const runPrompt = async (
     // 过去也从不透出事件行，在这里挂就会给那条路径凭空加出 NDJSON 行。
     const subscribeEvents = readRuntimeEventSubscriber(app.runtime);
     detachEvents = subscribeEvents?.({ onSessionEvent: observer.observe });
+    // fork(unattended-run): remembers how each of the run's own turns ends
+    subscribeEvents?.({ onSessionEvent: runEnding.observerFor(String(app.sessionId)) });
     const runtimeFacts = readHeadlessRuntimeFacts(app.runtime);
     const result = await app.submitPrompt(
       attachmentPaths.length > 0
@@ -351,7 +361,8 @@ export const runPrompt = async (
     traceId = result.traceId ?? traceId;
     // 在飞的 workflow run 不能被进程退出孤儿化。窄触发（观察到过 dwf 活动）+ 宽排水
     // （runtime 的两个 busy 事实）——论证见 waitForHeadlessWorkflowSettle 的注释。
-    if (observer.hasWorkflowActivity() && runtimeFacts) {
+    // fork(unattended-run): waits while any background command, subagent or workflow, or a turn one queued, can still wake the model
+    if (runtimeFacts) {
       await waitForHeadlessWorkflowSettle({
         runtime: runtimeFacts,
         signal: abortController.signal,
@@ -366,9 +377,11 @@ export const runPrompt = async (
     stopObservingEvents();
     // `response` 取**最后**一个回合的文本：工作流结算后的那次总结才是答案。
     // 未进入等待时数组只有一项，于是 response ≡ result.response，行为逐字节不变。
-    const turnResponses = [result.response, ...observer.waitPhaseTurnResponses()].filter(
-      (text) => text.trim().length > 0,
-    );
+    // fork(unattended-run): the run's own later turns, without those of its subagents
+    const turnResponses = [
+      result.response,
+      ...runEnding.laterTurnResponses(result.turnId ? String(result.turnId) : undefined),
+    ].filter((text) => text.trim().length > 0);
     const response = turnResponses.at(-1) ?? result.response;
     // 只在真的多于一个回合时才带上数组——单回合运行的 json 输出因此逐字节不变。
     // 刻意在两处 summary 里各自内联这个条件展开而不是共享一个变量：展开一个联合类型的
@@ -395,6 +408,8 @@ export const runPrompt = async (
           ...(multiTurn ? { turnResponses } : {}),
           ...(result.usage ? { usage: { ...result.usage } } : {}),
           eventCount: result.events.length,
+          // fork(unattended-run): says whether the run finished, failed or was cancelled
+          ...runEnding.fields(),
           projection: {
             status: result.projection.status,
             turnCount: result.projection.turnCount,
@@ -404,7 +419,8 @@ export const runPrompt = async (
           },
         })}\n`,
       );
-      return 0;
+      // fork(unattended-run): the exit status says how the run ended
+      return runEnding.exitCode();
     }
 
     if (wantsJsonSummary(options)) {
@@ -437,6 +453,8 @@ export const runPrompt = async (
                 },
               }
             : {}),
+          // fork(unattended-run): says whether the run finished, failed or was cancelled
+          ...runEnding.fields(),
           projection: {
             status: result.projection.status,
             turnCount: result.projection.turnCount,
@@ -446,14 +464,17 @@ export const runPrompt = async (
           },
         }),
       );
-      return 0;
+      // fork(unattended-run): the exit status says how the run ended
+      return runEnding.exitCode();
     }
 
     if (hookTrustDiagnostic) writeHeadlessWorkspaceHookTrustDiagnostic(ctx, hookTrustDiagnostic);
     // 每个回合的文本按到达序打印，所以最后一段自然就是结算后的总结。
     // 单回合时这与 `${result.response}\n` 逐字节相同。
     ctx.stdout.write(`${turnResponses.join("\n\n")}\n`);
-    return 0;
+    // fork(unattended-run): says on stderr, and in the exit status, how a run that did not finish ended
+    runEnding.reportInText(ctx.stderr);
+    return runEnding.exitCode();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     ctx.stderr.write(`Error: ${message}${traceId ? ` (traceId: ${traceId})` : ""}\n`);
@@ -465,8 +486,16 @@ export const runPrompt = async (
         ctx.stderr.write(`${error.stack}\n`);
       }
     }
-    return 1;
+    // fork(unattended-run): a run that fails or is cancelled still closes with a result saying which
+    return runEnding.closeWithError(error, {
+      stdout: ctx.stdout,
+      format: { streams: wantsEventStream(options), json: wantsJsonSummary(options) },
+      ...(app ? { sessionId: String(app.sessionId) } : {}),
+      ...(traceId ? { traceId } : {}),
+    });
   } finally {
+    // fork(unattended-run): the result is printed; a signal's cleanup may proceed
+    runEnding.resultPrinted();
     stopObservingEvents();
     unregisterShutdownHandlers();
     await closeApp();
