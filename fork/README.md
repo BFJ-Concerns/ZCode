@@ -187,6 +187,15 @@ record. Tests within a file run one after another and share its sandbox.
   kind of reply, a driver for the interactive terminal UI), it goes into the harness
   module it belongs to, in the commit of the difference that first needs it.
 
+### Z.ai silence
+
+An unnamed marketplace refresh updates the owner's known catalogues and omits the bundled
+official catalogue from both its work and its diagnostics. An explicit request to refresh
+that catalogue explains that it is bundled. The CLI's connection guard checks the Node
+destination, including request options merged with a URL and requests through the owner's
+proxy. Document setup without a named font mirror uses installed fonts and reports what it
+finds.
+
 ## The gates
 
 Two commands gate every change to the fork and every upstream release brought in. Each

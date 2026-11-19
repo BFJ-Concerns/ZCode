@@ -166,7 +166,7 @@ if (Test-Path $SofficePath) {
 }
 Write-Host ""
 
-# ── Step 2d: Font Installation (from CDN) ──
+# ── Step 2d: Font Installation (from a configured mirror) ──
 Write-Host "--- [4/5] Font Installation ---"
 # fork(zai-silence): fonts download only from a mirror the owner names, never from Z.ai's CDN
 $FontCdnBase = $env:ZCODE_FONT_SOURCE_URL
@@ -189,7 +189,7 @@ if (-not $FontCdnBase) {
         $lines = Get-Content $FontList | Where-Object { $_.Trim() -ne "" }
         $Total = $lines.Count
         $Installed = 0; $Skipped = 0; $Failed = 0
-        Write-Info "Downloading $Total fonts from CDN..."
+        Write-Info "Downloading $Total fonts from the configured mirror..."
         
         foreach ($relPath in $lines) {
             $fname = Split-Path $relPath -Leaf
@@ -225,7 +225,7 @@ if (-not $FontCdnBase) {
     }
 }
 
-# Set XLSX_FONTS_DIR to user font directory (fonts are now installed there)
+# Set XLSX_FONTS_DIR to user font directory
 $XLSX_FONTS_DIR = $UserFontDir
 $env:XLSX_FONTS_DIR = $XLSX_FONTS_DIR
 Write-Host ""
@@ -245,7 +245,7 @@ foreach ($f in $CjkFonts) {
 }
 
 if (-not $CjkFound) {
-    Write-Warn "No CJK font verified yet - fonts were just installed, restart may be needed"
+    Write-Warn "No CJK font verified. Check the installed fonts."
 }
 Write-Host ""
 

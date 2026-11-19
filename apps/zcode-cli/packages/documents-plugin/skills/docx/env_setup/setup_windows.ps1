@@ -184,7 +184,7 @@ if ($PyCmd) {
 }
 Write-Host ""
 
-# ── Step 2e: Font Installation (from CDN) ──
+# ── Step 2e: Font Installation (from a configured mirror) ──
 Write-Host "--- [5/6] Font Installation ---"
 # fork(zai-silence): fonts download only from a mirror the owner names, never from Z.ai's CDN
 $FontCdnBase = $env:ZCODE_FONT_SOURCE_URL
@@ -207,7 +207,7 @@ if (-not $FontCdnBase) {
         $lines = Get-Content $FontList | Where-Object { $_.Trim() -ne "" }
         $Total = $lines.Count
         $Installed = 0; $Skipped = 0; $Failed = 0
-        Write-Info "Downloading $Total fonts from CDN..."
+        Write-Info "Downloading $Total fonts from the configured mirror..."
         
         foreach ($relPath in $lines) {
             $fname = Split-Path $relPath -Leaf
@@ -243,7 +243,7 @@ if (-not $FontCdnBase) {
     }
 }
 
-# Set DOCX_FONTS_DIR to user font directory (fonts are now installed there)
+# Set DOCX_FONTS_DIR to user font directory
 $DOCX_FONTS_DIR = $UserFontDir
 $env:DOCX_FONTS_DIR = $DOCX_FONTS_DIR
 Write-Host ""
@@ -263,7 +263,7 @@ foreach ($f in $CjkFonts) {
 }
 
 if (-not $CjkFound) {
-    Write-Warn "No CJK font verified yet - fonts were just installed, restart may be needed"
+    Write-Warn "No CJK font verified. Check the installed fonts."
 }
 Write-Host ""
 

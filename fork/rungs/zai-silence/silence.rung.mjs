@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -20,8 +20,7 @@ import { openTerminalUi } from "../../harness/terminal-ui.mjs";
 
 const FOOTER_DOCUMENT = fileURLToPath(new URL("footer-document.py", import.meta.url));
 /** Where `zcode` seeds the bundled Word plugin's `docx` skill in a home. */
-const DOCX_SKILL_SCRIPTS =
-  "$HOME/.zcode/cli/plugins/cache/zcode-plugins-official/documents/*/skills/docx/scripts";
+const DOCX_SKILL = "$HOME/.zcode/cli/plugins/cache/zcode-plugins-official/documents/*/skills/docx";
 /**
  * How long the idle terminal UI is left alone: past the one-minute timer on which
  * upstream checks for new built-in model rules, which is the work an idle `zcode` does.
@@ -113,7 +112,7 @@ test("a document skill producing a document reaches no host but the stand-ins", 
   const { provider, home } = await ownerWithProvider(t, [
     callTool("Skill", { skill: "docx" }),
     callTool("Bash", {
-      command: `python3 '${FOOTER_DOCUMENT}' report.docx && python3 ${DOCX_SKILL_SCRIPTS}/fix_footer_fields.py report.docx`,
+      command: `python3 '${FOOTER_DOCUMENT}' report.docx && python3 ${DOCX_SKILL}/scripts/fix_footer_fields.py report.docx`,
       description: "Finish the report's page numbers with the docx skill",
     }),
     say("The report is ready."),
@@ -172,6 +171,110 @@ test("the plugin commands reach no host but the stand-ins", async (t) => {
   assert.notEqual(catalogue.exitCode, 0, "the official catalogue cannot be fetched");
   assert.match(catalogue.output, /bundled with zcode/u);
 
+  await assertNothingAttempted(home);
+});
+
+test("a document skill uses installed fonts and reports no download without a mirror", async (t) => {
+  const { provider, home } = await ownerWithProvider(t, [
+    callTool("Skill", { skill: "docx" }),
+    callTool("Bash", {
+      command: `env -u ZCODE_FONT_SOURCE_URL USE_CN_MIRROR_FORCE=true PATH="$PWD/setup-bin:$PATH" bash ${DOCX_SKILL}/env_setup/setup_mac_linux.sh`,
+      description: "Run the Word skill's setup with no font mirror",
+    }),
+    say("Setup finished."),
+  ]);
+  // These stand-ins make the existing dependencies available and model a machine with
+  // no CJK fonts. Record any download the font step tries to make.
+  const bin = join(home.workspace, "setup-bin");
+  await mkdir(bin);
+  for (const name of ["node", "npm", "python3", "fc-list", "curl"]) {
+    const body = name === "curl" ? 'printf "%s\\n" "$*" >> font-downloads; exit 1' : "exit 0";
+    await writeFile(
+      join(bin, name),
+      `#!/bin/sh
+${body}
+`,
+      { mode: 0o755 },
+    );
+  }
+
+  const run = launch({ home, prompt: "Set up the Word document skill." });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+
+  const result = provider
+    .modelRequests()
+    .at(-1)
+    .body.messages.filter((message) => message.role === "tool")
+    .at(-1)?.content;
+  assert.match(result, /No font mirror named: using installed fonts/u);
+  assert.match(result, /No CJK font detected/u);
+  assert.match(result, /All dependencies OK/u);
+  assert.doesNotMatch(result, /fonts were (?:just installed|downloaded)|Downloading .* fonts/u);
+  await assert.rejects(readFile(join(home.workspace, "font-downloads")), { code: "ENOENT" });
+  await assertNothingAttempted(home);
+});
+
+test("bulk refresh updates the owner's marketplaces and stays silent about the bundled catalogue", async (t) => {
+  const { home } = await ownerWithProvider(t, []);
+  const args = ["plugins", "marketplace"];
+  const knownPath = join(home.dir, ".zcode", "cli", "plugins", "known_marketplaces.json");
+  const official = "zcode-plugins-official";
+  const list = await zcodeCommand(home, [...args, "list"]);
+  assert.equal(list.exitCode, 0, list.output);
+
+  for (const name of ["owner-one", "owner-two", "claude-plugins-official"]) {
+    const path = join(home.workspace, `${name}.json`);
+    await writeFile(path, JSON.stringify({ name, description: "Original", plugins: [] }));
+    if (name === "claude-plugins-official") continue;
+    const add = await zcodeCommand(home, [...args, "add", path]);
+    assert.equal(add.exitCode, 0, add.output);
+    await writeFile(path, JSON.stringify({ name, description: "Refreshed", plugins: [] }));
+  }
+
+  const known = JSON.parse(await readFile(knownPath, "utf8"));
+  const claude = known.marketplaces.find(({ id }) => id === "claude-plugins-official");
+  assert.ok(claude, "the default Claude marketplace was seeded");
+  claude.source = { source: "file", path: join(home.workspace, "claude-plugins-official.json") };
+  const bundled = known.marketplaces.find(({ id }) => id === official);
+  assert.ok(bundled, "the bundled catalogue was seeded");
+  bundled.lastRefreshFailure = {
+    code: "plugin_marketplace_invalid",
+    failedAt: new Date().toISOString(),
+    message: "Old official refresh failure",
+  };
+  await writeFile(knownPath, JSON.stringify(known));
+
+  const run = launch({ home, command: [...args, "update"], args: ["--json"] });
+  t.after(() => run.dispose());
+  const refresh = await run.outcome;
+  assert.equal(refresh.exitCode, 0, [refresh.stdout, refresh.stderr].join("\n"));
+  const result = JSON.parse(refresh.stdout);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.diagnostics, []);
+  assert.ok(!result.marketplaces.some(({ id }) => id === official));
+  assert.deepEqual(
+    result.marketplaces
+      .filter(({ id }) => id.startsWith("owner-"))
+      .map(({ id, description }) => [id, description])
+      .sort(),
+    [
+      ["owner-one", "Refreshed"],
+      ["owner-two", "Refreshed"],
+    ],
+  );
+  await assertNothingAttempted(home);
+});
+
+test("listing models reaches no host but the configured provider", async (t) => {
+  const { provider, home } = await ownerWithProvider(t, []);
+  const run = launch({ home, command: ["models"] });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  assert.match(outcome.stdout, /stand-in-model/u);
+  assert.ok(provider.requests.some(({ path }) => path.startsWith("/v1/models")));
   await assertNothingAttempted(home);
 });
 

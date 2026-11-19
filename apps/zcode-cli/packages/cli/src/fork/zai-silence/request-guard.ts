@@ -1,11 +1,9 @@
 import http from "node:http";
 import https from "node:https";
+import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
-import {
-  refusalError,
-  type ConnectionGuardOptions,
-  type Destination,
-} from "./connection-guard.js";
+import { urlToHttpOptions } from "node:url";
+import { refusalError, type ConnectionGuardOptions, type Destination } from "./connection-guard.js";
 import { isZaiHost } from "./zai-hosts.js";
 
 type RequestFunction = (...args: unknown[]) => http.ClientRequest;
@@ -56,38 +54,43 @@ export function installRequestGuard(options: ConnectionGuardOptions): void {
       return clientRequest;
     }) as unknown as typeof transport.get;
   }
+  syncBuiltinESMExports();
 }
 
 type RequestOptions = {
   readonly host?: unknown;
   readonly hostname?: unknown;
   readonly port?: unknown;
+  readonly defaultPort?: unknown;
   readonly socketPath?: unknown;
 };
 
-/**
- * The host and port a request is for, in the forms Node accepts: a URL with optional
- * options, or options alone. Options override the URL, as they do in Node.
- */
-function requestDestination(args: readonly unknown[], defaultPort: number): Destination | undefined {
-  let url: URL | undefined;
-  let options: RequestOptions | undefined;
-  if (typeof args[0] === "string" || args[0] instanceof URL) {
+/** Resolve the URL and options in Node's order, then use its hostname/host precedence. */
+function requestDestination(
+  args: readonly unknown[],
+  defaultPort: number,
+): Destination | undefined {
+  const [input, options] = args;
+  let merged: RequestOptions;
+  if (typeof input === "string" || isRequestUrl(input)) {
     try {
-      url = new URL(String(args[0]));
+      const url = typeof input === "string" ? new URL(input) : input;
+      // URL fields are the base options. Own overrides can clear a field as well as set it.
+      merged = { ...urlToHttpOptions(url), ...(isOptions(options) ? options : undefined) };
     } catch {
       // Node rejects the request itself; there is no host to judge.
       return undefined;
     }
-    if (isOptions(args[1])) options = args[1];
-  } else if (isOptions(args[0])) {
-    options = args[0];
+  } else {
+    merged = isOptions(input) ? { ...input } : {};
   }
-  if (typeof options?.socketPath === "string") return undefined;
-  const host =
-    stringOf(options?.hostname) ?? stringOf(options?.host) ?? url?.hostname ?? "localhost";
-  const port = Number(options?.port ?? (url?.port || defaultPort));
-  return { host, port: Number.isInteger(port) ? port : undefined };
+  // Node uses a Unix socket only for a non-empty socketPath.
+  if (stringOf(merged.socketPath) !== undefined) return undefined;
+  const host = stringOf(merged.hostname) ?? stringOf(merged.host) ?? "localhost";
+  // Proxy agents can derive their default from the call stack inside Node. Use the request protocol.
+  const rawPort = merged.port || merged.defaultPort || defaultPort;
+  const port = typeof rawPort === "string" ? Number(rawPort) : rawPort;
+  return { host, port: typeof port === "number" && Number.isInteger(port) ? port : undefined };
 }
 
 /** The same request arguments, connected through a socket that fails with the refusal. */
@@ -100,7 +103,7 @@ function withFailingConnection(args: readonly unknown[], destination: Destinatio
       return socket;
     },
   };
-  if (typeof args[0] === "string" || args[0] instanceof URL) {
+  if (typeof args[0] === "string" || isRequestUrl(args[0])) {
     const [url, second, ...rest] = args;
     return isOptions(second)
       ? [url, { ...second, ...failingConnection }, ...rest]
@@ -110,8 +113,16 @@ function withFailingConnection(args: readonly unknown[], destination: Destinatio
   return [{ ...(options as object), ...failingConnection }, ...rest];
 }
 
+// Node distinguishes URL-shaped input from request options by these fields, including on
+// URL objects extended with request options such as path.
+function isRequestUrl(value: unknown): value is URL {
+  if (!isOptions(value)) return false;
+  const { href, protocol, auth, path } = value as Record<string, unknown>;
+  return Boolean(href && protocol && auth === undefined && path === undefined);
+}
+
 function isOptions(value: unknown): value is RequestOptions {
-  return typeof value === "object" && value !== null && !(value instanceof URL);
+  return typeof value === "object" && value !== null;
 }
 
 function stringOf(value: unknown): string | undefined {

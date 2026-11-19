@@ -105,6 +105,8 @@ export {
   writeCdnOfficialMarketplacePartition,
 } from "./official-marketplace.js";
 
+export { isOfficialCatalogue } from "../fork/zai-silence/index.js";
+
 export { getPluginSourceDiagnosticCode } from "./source-errors.js";
 
 export {

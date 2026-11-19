@@ -25,6 +25,7 @@ import {
   getPluginSourceDiagnosticCode,
   getPluginDataDir,
   installMarketplacePlugin,
+  isOfficialCatalogue,
   listInstalledPluginRecords,
   loadKnownMarketplacesSync,
   loadMarketplaceManifestSync,
@@ -650,7 +651,8 @@ async function updateZCodePluginMarketplaceLocked(
   const knownById = new Map(known.map((record) => [record.id, record]));
   const targetIds = resolveMarketplaceRefreshTargetIds({
     declaredIds: declared.keys(),
-    knownIds: knownById.keys(),
+    // 批量刷新将逐个按名称调用 adapter，须在这里跳过内置目录，避免触发显式刷新错误。
+    knownIds: known.map(({ id }) => id).filter((id) => !isOfficialCatalogue(id)),
     marketplace: options.marketplace,
   });
   if (
@@ -701,8 +703,9 @@ async function updateZCodePluginMarketplaceLocked(
 
   // map 回调只吃第一个参数：toMarketplaceSummaryData 的第二参是 featured，不能接 map 的 index。
   const records = loadKnownMarketplacesSync(pluginStorageRoot);
+  const targetIdSet = new Set(targetIds);
   const selectedFailures = records.flatMap((record): PluginLoadOutcome["diagnostics"] => {
-    if (options.marketplace && record.id !== options.marketplace) return [];
+    if (!targetIdSet.has(record.id)) return [];
     if (!record.lastRefreshFailure) return [];
     return [
       {
