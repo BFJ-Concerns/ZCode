@@ -95,6 +95,51 @@ test("a run whose woken last turn the provider fails exits 1 and says it failed"
   assert.equal(provider.modelRequests().length, 3, "the failed request was the woken turn's");
 });
 
+test("a run whose turn fails while its background command runs waits to be woken by it", async (t) => {
+  const { provider, home } = await ownerWithProvider(t, [
+    callTool("Bash", {
+      command: "until [ -e release ]; do sleep 0.1; done",
+      description: "Wait for the release",
+      run_in_background: true,
+    }),
+    fail(REJECTED, REJECTION),
+    say("Recovered once the background command finished."),
+  ]);
+
+  const run = start(t, home);
+  await run.event((event) => event.type === "turn.failed");
+  assert.ok(run.running(), "a failed turn does not end a run its background command can wake");
+  await writeFile(join(home.workspace, "release"), "");
+  const outcome = await run.outcome;
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  assert.equal(outcome.result.outcome, "finished");
+  assert.equal(outcome.result.response, "Recovered once the background command finished.");
+  assert.equal(provider.modelRequests().length, 3, "the woken turn is the last one");
+});
+
+test("a run refused before it starts says it failed", async (t) => {
+  const { provider, home } = await ownerWithProvider(t, []);
+
+  // Workflows are off unless --workflow-mode turns them on.
+  const outcome = await start(t, home, "/workflow check the build").outcome;
+
+  assert.equal(outcome.exitCode, 1);
+  assert.equal(outcome.result.outcome, "failed");
+  assert.match(outcome.result.error, /Dynamic workflows are disabled/);
+  assert.equal(provider.modelRequests().length, 0);
+});
+
+test("a command answered without a model turn says it finished", async (t) => {
+  const { home } = await ownerWithProvider(t, []);
+
+  const outcome = await start(t, home, "/goal").outcome;
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  assert.equal(outcome.result.outcome, "finished");
+  assert.equal(typeof outcome.result.response, "string");
+});
+
 test("a run stopped by a signal while its background command runs says it was cancelled", async (t) => {
   const { home } = await ownerWithProvider(t, [
     backgroundCommandThatOutlivesTheTurn,

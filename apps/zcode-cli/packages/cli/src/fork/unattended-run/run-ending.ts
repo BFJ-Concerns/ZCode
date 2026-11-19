@@ -1,4 +1,5 @@
 import { formatJson } from "@zcode/core";
+import { readHeadlessRuntimeFacts, waitForHeadlessWorkflowSettle } from "../../headless-workflow.js";
 import {
   SessionEventType,
   type SessionEvent,
@@ -39,6 +40,19 @@ const SIGNAL_EXIT_CODES: Partial<Record<NodeJS.Signals, number>> = {
 /** A turn cancelled with no signal behind it reports as an interrupt does. */
 const CANCELLED_EXIT_CODE = 130;
 
+/** Where and how a closing result is printed, and what can still wake the model. */
+export interface ClosingOutput {
+  stdout: WriteStream;
+  stderr: WriteStream;
+  format: ResultFormat;
+  sessionId?: string;
+  traceId?: string;
+  /** The run's runtime, whose background work can still wake the model. */
+  runtime?: unknown;
+  /** Aborted when the run is cancelled; the wait ends with it. */
+  signal?: AbortSignal;
+}
+
 interface TurnEnding {
   turnId: string | undefined;
   outcome: RunOutcome;
@@ -66,10 +80,17 @@ export interface RunEnding {
   exitCode: () => number;
   /** In text output, says on stderr how a run that did not finish ended. */
   reportInText: (stderr: WriteStream) => void;
-  /** Prints the closing result of a run that ended in an error, and returns its exit status. */
-  closeWithError: (
-    error: unknown,
-    output: { stdout: WriteStream; format: ResultFormat; sessionId?: string; traceId?: string },
+  /**
+   * Closes a run that ended in an error: records the error, waits while anything the run
+   * started can still wake the model (a failed turn does not end a run whose background
+   * work is still running), prints the closing result and returns the exit status.
+   * Without `runtime` nothing can wake the model and the run closes at once.
+   */
+  closeAfterError: (cause: unknown, output: ClosingOutput) => Promise<number>;
+  /** Prints a closing result for `response` in a JSON format, and returns the exit status. */
+  writeResult: (
+    output: Omit<ClosingOutput, "runtime" | "signal">,
+    response: string,
   ) => number;
   /**
    * Runs `cleanup` once the run has printed its result, so that a signal arriving while
@@ -109,6 +130,30 @@ export const createRunEnding = (): RunEnding => {
     }
   };
 
+  const reportInText = (stderr: WriteStream): void => {
+    const ending = fields();
+    if (ending.outcome === "failed") stderr.write(`Error: ${ending.error ?? "the run failed"}\n`);
+    if (ending.outcome === "cancelled") stderr.write(`Cancelled${signal ? ` by ${signal}` : ""}\n`);
+  };
+
+  const writeResult = (
+    output: Omit<ClosingOutput, "runtime" | "signal">,
+    response: string | undefined,
+  ): number => {
+    const result = {
+      ...(output.sessionId ? { sessionId: output.sessionId } : {}),
+      ...(output.traceId ? { traceId: output.traceId } : {}),
+      ...(response === undefined ? {} : { response }),
+      ...fields(),
+    };
+    if (output.format.streams) {
+      output.stdout.write(`${JSON.stringify({ type: "result", ...result })}\n`);
+    } else {
+      output.stdout.write(formatJson(result));
+    }
+    return exitCode();
+  };
+
   return {
     cancelledBy: (stoppedBy) => {
       signal ??= stoppedBy;
@@ -128,26 +173,28 @@ export const createRunEnding = (): RunEnding => {
         ),
     fields,
     exitCode,
-    reportInText: (stderr) => {
+    reportInText,
+    closeAfterError: async (cause, output) => {
+      // A turn that failed has already said why in its own event, and a turn its
+      // background work wakes may still finish the run. Any other error is the run's own.
+      if (lastTurn()?.outcome !== "failed") error ??= messageOf(cause);
+      const runtime = output.runtime === undefined ? undefined : readHeadlessRuntimeFacts(output.runtime);
+      if (runtime && output.signal && !signal) {
+        await waitForHeadlessWorkflowSettle({ runtime, signal: output.signal });
+      }
       const ending = fields();
-      if (ending.outcome === "failed") stderr.write(`Error: ${ending.error ?? "the run failed"}\n`);
-      if (ending.outcome === "cancelled") stderr.write(`Cancelled${signal ? ` by ${signal}` : ""}\n`);
-    },
-    closeWithError: (cause, output) => {
-      // A turn that failed says why in its own event; the error the run caught names only the turn.
-      error ??= lastTurn()?.error ?? (cause instanceof Error ? cause.message : String(cause));
-      const result = {
-        ...(output.sessionId ? { sessionId: output.sessionId } : {}),
-        ...(output.traceId ? { traceId: output.traceId } : {}),
-        ...fields(),
-      };
-      if (output.format.streams) {
-        output.stdout.write(`${JSON.stringify({ type: "result", ...result })}\n`);
-      } else if (output.format.json) {
-        output.stdout.write(formatJson(result));
+      const response = ending.outcome === "finished" ? lastTurn()?.response : undefined;
+      if (output.format.streams || output.format.json) {
+        return writeResult(output, response);
+      }
+      if (response !== undefined) output.stdout.write(`${response}\n`);
+      // The caller has already reported the error it caught; say only what it has not.
+      if (ending.outcome !== "failed" || ending.error !== messageOf(cause)) {
+        reportInText(output.stderr);
       }
       return exitCode();
     },
+    writeResult: (output, response) => writeResult(output, response),
     afterResult: async (cleanup) => {
       await printed.promise;
       await cleanup();
@@ -155,6 +202,9 @@ export const createRunEnding = (): RunEnding => {
     resultPrinted: () => printed.resolve(),
   };
 };
+
+const messageOf = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);
 
 const turnEndingOf = (event: SessionEvent): TurnEnding | undefined => {
   const turnId = event.turnId === undefined ? undefined : String(event.turnId);

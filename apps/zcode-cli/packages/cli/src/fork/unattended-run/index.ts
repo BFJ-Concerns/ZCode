@@ -1,5 +1,6 @@
 export {
   createRunEnding,
+  type ClosingOutput,
   type ResultFormat,
   type RunEnding,
   type RunEndingFields,

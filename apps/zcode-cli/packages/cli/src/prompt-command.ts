@@ -42,7 +42,7 @@ import type {
   RunDependencies,
 } from "./cli-types.js";
 import { workspaceTrustCommandArgument } from "./hooks-trust-command.js";
-import { createRunEnding } from "./fork/unattended-run/index.js";
+import { createRunEnding, type RunEnding } from "./fork/unattended-run/index.js";
 
 /**
  * Does this run print a JSON summary at the end?
@@ -84,9 +84,18 @@ export const runPrompt = async (
   presentationSurface: PresentationSurface = "terminal",
   workflowMode: DynamicWorkflowMode = DEFAULT_CLI_WORKFLOW_MODE,
 ): Promise<number> => {
+  // fork(unattended-run): remembers how the run ended, for its result and exit status
+  const runEnding = createRunEnding();
+  // fork(unattended-run): where the closing result goes, in the format the options choose
+  const closing = {
+    stdout: ctx.stdout,
+    stderr: ctx.stderr,
+    format: { streams: wantsEventStream(options), json: wantsJsonSummary(options) },
+  };
   if (prompt.trim().length === 0) {
     ctx.stderr.write(`${EMPTY_PROMPT_ERROR}\n`);
-    return 1;
+    // fork(unattended-run): a run refused before it starts still closes with a result saying it failed
+    return await runEnding.closeAfterError(new Error(EMPTY_PROMPT_ERROR), closing);
   }
 
   const slashCommand = parseSlashCommand(prompt);
@@ -106,7 +115,8 @@ export const runPrompt = async (
     !isWorkflowModeEnabled(workflowMode)
   ) {
     ctx.stderr.write(`Error: ${WORKFLOW_DISABLED_NOTICE}\n`);
-    return 1;
+    // fork(unattended-run): a run refused before it starts still closes with a result saying it failed
+    return await runEnding.closeAfterError(new Error(WORKFLOW_DISABLED_NOTICE), closing);
   }
   if (slashCommand?.type === "known" && slashCommand.name === "skill" && !slashCommand.skillName) {
     return await runSkillsCommand(ctx, options, deps, []);
@@ -149,8 +159,6 @@ export const runPrompt = async (
     ReturnType<NonNullable<RunDependencies["startProcessProviderRegistryRuntime"]>>
   >;
   const abortController = new AbortController();
-  // fork(unattended-run): remembers how the run ended, for its result and exit status
-  const runEnding = createRunEnding();
   const cleanupTimeoutMs = Math.max(
     1,
     Math.trunc(deps.shutdownCleanupTimeoutMs ?? DEFAULT_CLI_CLEANUP_TIMEOUT_MS),
@@ -310,6 +318,10 @@ export const runPrompt = async (
     // （`/compress` 是唯一一个 CLI 解析成 unknown 而 facade 又拒绝展开的）同样留在那边，
     // 判据与 facade 的 gate 共用一个来源，见 isResolvableCustomCommand。
     // `/expert`、`/goal` 走不到 submitPrompt，路由逐字不变。
+    // fork(unattended-run): remembers how each of the run's own turns ends, on every path that submits one
+    readRuntimeEventSubscriber(app.runtime)?.({
+      onSessionEvent: runEnding.observerFor(String(app.sessionId)),
+    });
     if (slashCommand && (await routesToPromptCommandCenter(slashCommand, deps))) {
       return await runPromptCommandCenterCommand(
         ctx,
@@ -321,6 +333,8 @@ export const runPrompt = async (
         abortController.signal,
         deps,
         workflowMode,
+        // fork(unattended-run): the command's result says how the run ended
+        runEnding,
       );
     }
 
@@ -336,8 +350,6 @@ export const runPrompt = async (
     // 过去也从不透出事件行，在这里挂就会给那条路径凭空加出 NDJSON 行。
     const subscribeEvents = readRuntimeEventSubscriber(app.runtime);
     detachEvents = subscribeEvents?.({ onSessionEvent: observer.observe });
-    // fork(unattended-run): remembers how each of the run's own turns ends
-    subscribeEvents?.({ onSessionEvent: runEnding.observerFor(String(app.sessionId)) });
     const runtimeFacts = readHeadlessRuntimeFacts(app.runtime);
     const result = await app.submitPrompt(
       attachmentPaths.length > 0
@@ -486,12 +498,12 @@ export const runPrompt = async (
         ctx.stderr.write(`${error.stack}\n`);
       }
     }
-    // fork(unattended-run): a run that fails or is cancelled still closes with a result saying which
-    return runEnding.closeWithError(error, {
-      stdout: ctx.stdout,
-      format: { streams: wantsEventStream(options), json: wantsJsonSummary(options) },
-      ...(app ? { sessionId: String(app.sessionId) } : {}),
+    // fork(unattended-run): waits while background work can still wake the model, then closes with a result saying how the run ended
+    return await runEnding.closeAfterError(error, {
+      ...closing,
+      ...(app ? { sessionId: String(app.sessionId), runtime: app.runtime } : {}),
       ...(traceId ? { traceId } : {}),
+      signal: abortController.signal,
     });
   } finally {
     // fork(unattended-run): the result is printed; a signal's cleanup may proceed
@@ -561,6 +573,7 @@ async function runPromptCommandCenterCommand(
   abortSignal: AbortSignal,
   deps: RunDependencies,
   workflowMode: DynamicWorkflowMode,
+  runEnding: RunEnding,
 ): Promise<number> {
   const commandCenter = createCommandCenter({
     getApp: async () => app as unknown as CommandCenterApp,
@@ -595,7 +608,14 @@ async function runPromptCommandCenterCommand(
     ctx.stderr.write(
       `Error: ${result.response}\n${TARGET_SELECTION_UNAVAILABLE_ERROR}${nextTraceId ? ` (traceId: ${nextTraceId})` : ""}\n`,
     );
-    return 1;
+    // fork(unattended-run): a command that cannot go on still closes with a result saying it failed
+    return await runEnding.closeAfterError(new Error(result.response), {
+      stdout: ctx.stdout,
+      stderr: ctx.stderr,
+      format: { streams: wantsEventStream(options), json: wantsJsonSummary(options) },
+      sessionId: String(app.sessionId),
+      ...(nextTraceId ? { traceId: nextTraceId } : {}),
+    });
   }
 
   if (options.memoryBench) {
@@ -604,18 +624,23 @@ async function runPromptCommandCenterCommand(
   }
 
   if (wantsJsonSummary(options)) {
-    ctx.stdout.write(
-      formatJson({
+    // fork(unattended-run): the command's result, as a run's, says how it ended
+    return runEnding.writeResult(
+      {
+        stdout: ctx.stdout,
+        stderr: ctx.stderr,
+        format: { streams: wantsEventStream(options), json: true },
         sessionId: String(app.sessionId),
         ...(nextTraceId ? { traceId: nextTraceId } : {}),
-        response: result.response,
-      }),
+      },
+      result.response,
     );
-    return 0;
   }
 
   ctx.stdout.write(`${result.response}\n`);
-  return 0;
+  // fork(unattended-run): says on stderr, and in the exit status, how a command that did not finish ended
+  runEnding.reportInText(ctx.stderr);
+  return runEnding.exitCode();
 }
 
 async function listCustomCommandsForPrompt(deps: RunDependencies) {
