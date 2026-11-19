@@ -23,17 +23,6 @@ const READY_TEXT = "Type a prompt";
 const KILL_SIGNAL = "SIGKILL";
 
 /**
- * OpenTUI, which draws the terminal UI, uses `node:ffi` when Node has it, and that
- * backend cannot yet pass the `usize` values the renderer needs: on Node 26 the UI
- * stops at start-up with "Node FFI backend does not support usize until (yet)".
- * Without `node:ffi` OpenTUI uses its Node 22 backend, the one it uses on the Node
- * that `mise.toml` pins, which has no `node:ffi` to turn off.
- */
-const NODE_FLAGS = process.allowedNodeEnvironmentFlags.has("--no-experimental-ffi")
-  ? ["--no-experimental-ffi"]
-  : [];
-
-/**
  * @typedef {object} TerminalUiExit
  * @property {number | null} exitCode
  * @property {NodeJS.Signals | null} signal
@@ -68,7 +57,7 @@ export function openTerminalUi({ home, cwd = home.workspace, args = [] }) {
 
   const command = [
     `stty cols ${COLUMNS} rows ${ROWS}`,
-    `exec ${[process.execPath, ...NODE_FLAGS, ZCODE_ENTRY, "--cwd", cwd, ...args].map(shellQuote).join(" ")}`,
+    `exec ${[process.execPath, ZCODE_ENTRY, "--cwd", cwd, ...args].map(shellQuote).join(" ")}`,
   ].join("; ");
   // -q: no start and end banners; -f: flush as it is drawn; -e: exit as zcode exits.
   const child = spawn("script", ["-qfec", command, "/dev/null"], {

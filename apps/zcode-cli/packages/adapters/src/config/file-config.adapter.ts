@@ -7,6 +7,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import type { RuntimeConfigPatch, UiLocale } from "@zcode/contracts";
 import { z } from "zod";
 import { withFileLock } from "@zcode/shared/node";
+// fork(searxng-search): reads the search endpoint from owner settings
+import { readOwnerSearxngUrl } from "../fork/searxng-search/index.js";
 import {
   CANONICAL_CUA_PLUGIN_ID,
   canonicalizePluginId,
@@ -23,6 +25,8 @@ interface FileConfigOptions {
 }
 
 export interface LoadedConfig {
+  // fork(searxng-search): carries the endpoint from the owner file
+  searxngUrl?: string;
   config: RuntimeConfigPatch;
   diagnostics: ConfigDiagnostic[];
   path: string;
@@ -104,6 +108,8 @@ export function loadFileConfig(filePath?: string, options: FileConfigOptions = {
 
     return {
       config: result.config,
+      // fork(searxng-config-diagnostics): reports an unusable owner endpoint with the other configuration problems
+      searxngUrl: readOwnerSearxngUrl(parsed, result.diagnostics, options.scope),
       diagnostics: attachDiagnosticFilePath(result.diagnostics, resolvedPath),
       path: resolvedPath,
       loaded: true,

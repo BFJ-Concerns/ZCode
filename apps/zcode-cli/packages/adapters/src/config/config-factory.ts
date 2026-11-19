@@ -28,6 +28,8 @@ import {
   resolveWorkspaceHookTrustIdentity,
   type WorkspaceHookTrustIdentityFs,
 } from "@zcode/shared/managed-worktree";
+// fork(searxng-config-diagnostics): describes an unusable search endpoint in the configuration log
+import { describeOwnerSearxngUrlDiagnostic } from "../fork/searxng-search/index.js";
 import { createConfigPort } from "./index.js";
 import {
   loadFileConfig,
@@ -77,6 +79,8 @@ export interface ConfigResult {
   config: RuntimeConfig;
   sources: {
     user: {
+      // fork(searxng-search): carries the endpoint from the owner file
+      searxngUrl?: string;
       diagnostics: LoadedConfig["diagnostics"];
       path: string;
       loaded: boolean;
@@ -347,6 +351,8 @@ function assembleConfig(options: ConfigFactoryOptions, sources: LoadedConfigSour
     config: configPort.getAll(),
     sources: {
       user: {
+        // fork(searxng-search): passes through the owner search endpoint
+        searxngUrl: userConfigResult.searxngUrl,
         diagnostics: userConfigResult.diagnostics,
         path: userConfigResult.path,
         loaded: userConfigResult.loaded,
@@ -526,13 +532,16 @@ function logConfigDiagnostics(input: {
   });
 
   for (const diagnostic of diagnostics) {
-    logger.warn(resolveConfigDiagnosticLogMessage(diagnostic.code), {
+    // fork(searxng-config-diagnostics): includes the reason in the console and file log message
+    const searchDiagnostic = describeOwnerSearxngUrlDiagnostic(diagnostic);
+    logger.warn(searchDiagnostic?.message ?? resolveConfigDiagnosticLogMessage(diagnostic.code), {
       configPath: diagnostic.filePath,
       configScope: diagnostic.configScope,
       diagnosticCode: diagnostic.code,
       diagnosticMessage: diagnostic.message,
       diagnosticPath: diagnostic.path,
-      event: resolveConfigDiagnosticLogEvent(diagnostic.code),
+      // fork(searxng-config-diagnostics): records the search diagnostic event
+      event: searchDiagnostic?.event ?? resolveConfigDiagnosticLogEvent(diagnostic.code),
       severity: diagnostic.severity,
     });
   }
