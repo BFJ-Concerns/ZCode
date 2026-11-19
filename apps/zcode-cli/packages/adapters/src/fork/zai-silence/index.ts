@@ -25,3 +25,14 @@ export function refreshableMarketplaces<Marketplace extends { readonly id: strin
   }
   return selected.filter((marketplace) => !isOfficialCatalogue(marketplace.id));
 }
+
+/**
+ * ZCode Sites, the official plugin that publishes a project to Z.ai's hosting. It works
+ * only with a Z.ai account, so the fork loads it from nowhere: not bundled, and not from
+ * a copy upstream installed in the owner's plugin storage.
+ */
+const SITE_PUBLISHING_PLUGIN_ID = `zcode-site@${ZCODE_OFFICIAL_PLUGIN_MARKETPLACE}`;
+
+export function isSitePublishing(pluginId: string): boolean {
+  return pluginId === SITE_PUBLISHING_PLUGIN_ID;
+}
