@@ -1,3 +1,4 @@
+import { ZCODE_OFFICIAL_PLUGIN_MARKETPLACE } from "@zcode/contracts";
 import type { ConfigDiagnostic } from "../../config/schema.js";
 
 const INVALID_SEARXNG_URL = "config_searxng_url_invalid";
@@ -38,4 +39,8 @@ function getInvalidUrlMessage(url: URL | null): string | undefined {
 export function describeOwnerSearxngUrlDiagnostic(diagnostic: ConfigDiagnostic) {
   if (diagnostic.code !== INVALID_SEARXNG_URL) return undefined;
   return { message: diagnostic.message, event: "config.searxng_url.skipped" };
+}
+
+export function isRetiredImageSearchPlugin(pluginId: string): boolean {
+  return pluginId === `image-search@${ZCODE_OFFICIAL_PLUGIN_MARKETPLACE}`;
 }
