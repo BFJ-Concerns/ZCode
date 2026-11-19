@@ -18,7 +18,12 @@ const SSE_HEADERS = {
 const SCRIPT_EXHAUSTED_STATUS = 500;
 
 /** The model says `content` and ends its turn. */
-export const say = (content) => ({ kind: "say", content });
+export const say = (content, { inputTokens = 1, outputTokens = 1 } = {}) => ({
+  kind: "say",
+  content,
+  inputTokens,
+  outputTokens,
+});
 
 /** The model calls one tool; the fork runs it and sends the result in its next request. */
 export const callTool = (name, args = {}) => ({ kind: "callTool", name, args });
@@ -57,6 +62,7 @@ export const hang = () => ({ kind: "hang" });
  * @param {unknown} [options.listing]
  *   The JSON body served at `GET /v1/models`, in whichever provider's shape the rung
  *   is proving. Left out, the listing answers 404: a provider with no listing.
+ *   `hang()` accepts the listing request and never answers it.
  * @param {Reply[] | ((request: RecordedRequest, index: number) => Reply)} [options.script]
  *   The reply to each model request: a list consumed in arrival order, or a function
  *   of the request for a rung whose replies depend on what the fork sent. A request
@@ -87,6 +93,7 @@ export async function startModelProvider({ listing, script = [] } = {}) {
     const { pathname } = new URL(recorded.path, `http://${LOOPBACK}`);
     if (recorded.method === "GET" && pathname === "/v1/models") {
       if (listing === undefined) return sendJson(response, 404, errorBody("no model listing"));
+      if (listing?.kind === "hang") return undefined;
       return sendJson(response, 200, listing);
     }
     if (recorded.method === "POST" && pathname === "/v1/chat/completions") {
@@ -165,7 +172,13 @@ function sendReply(response, recorded, index, reply) {
           ],
         };
   const finishReason = reply.kind === "say" ? "stop" : "tool_calls";
-  const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+  const inputTokens = reply.kind === "say" ? reply.inputTokens : 1;
+  const outputTokens = reply.kind === "say" ? reply.outputTokens : 1;
+  const usage = {
+    prompt_tokens: inputTokens,
+    completion_tokens: outputTokens,
+    total_tokens: inputTokens + outputTokens,
+  };
 
   if (recorded.body?.stream !== true) {
     const { role, ...message } = delta;

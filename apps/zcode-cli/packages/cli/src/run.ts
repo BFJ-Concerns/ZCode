@@ -21,6 +21,9 @@ import { detectCliLocale } from "./locale.js";
 import { loadBootstrapModule } from "./bootstrap-loader.js";
 import { runEmbeddedSearchCli } from "./internal-search/embedded-search-cli.js";
 import { runCommandsCommand } from "./commands-command.js";
+// fork(per-run-model): read an explicit headless model selection
+import { readRunModelFlags } from "./fork/per-run-model/index.js";
+import { runModelsCommand } from "./fork/model-listings/index.js";
 import { resolveCliCwd } from "./cwd.js";
 import { runLoginCommand, runLogoutCommand } from "./login-command.js";
 import { CLI_COMMAND_NAME, CLI_PROCESS_NAME } from "./process-name.js";
@@ -562,6 +565,18 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
     },
   };
 
+  // fork(per-run-model): check which invocations can name a selection
+  let runModelSelection: ReturnType<typeof readRunModelFlags>;
+  try {
+    runModelSelection = readRunModelFlags(
+      parsed.values,
+      typeof parsed.values.prompt === "string" || targetRequest !== undefined,
+    );
+  } catch (error) {
+    ctx.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+
   if (typeof parsed.values.prompt === "string") {
     return await runPrompt(
       ctx,
@@ -577,6 +592,8 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
       toolsearchMode,
       presentationSurface,
       workflowMode,
+      // fork(per-run-model): pass the selection for this invocation
+      runModelSelection,
     );
   }
 
@@ -595,6 +612,8 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
       toolsearchMode,
       presentationSurface,
       workflowMode,
+      // fork(per-run-model): pass the selection for this invocation
+      runModelSelection,
     );
   }
 
@@ -628,6 +647,9 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
       return await runLogoutCommand(ctx, options, commandDeps);
     case "commands":
       return await runCommandsCommand(ctx, options, commandDeps, parsed.positionals.slice(1));
+    // fork(model-listings): prints every usable model as JSON
+    case "models":
+      return await runModelsCommand(ctx, commandDeps, parsed.positionals.slice(1));
     case "plugin":
     case "plugins":
       return await runPluginsCommand(

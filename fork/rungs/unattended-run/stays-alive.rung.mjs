@@ -148,7 +148,10 @@ test("a background command started under /goal keeps the run alive until the mod
 
   const run = launch({ home, prompt: "/goal Start the work in the background." });
   t.after(() => run.dispose());
-  await provider.request((request) => mentions(request, "Command running in background"));
+  // The provider also receives a model listing request without chat messages.
+  await provider.request(
+    (request) => request.method === "POST" && mentions(request, "Command running in background"),
+  );
   assert.ok(run.running(), "the run is still running while its background command runs");
   await release(home);
   const outcome = await run.outcome;

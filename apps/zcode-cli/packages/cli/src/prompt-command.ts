@@ -1,4 +1,4 @@
-import type { ToolSearchMode } from "@zcode/contracts";
+import type { ModelSelection, ToolSearchMode } from "@zcode/contracts";
 import { createCliProviderRefreshReporter } from "./provider-runtime-env.js";
 import { extname } from "node:path";
 import { formatJson, type PresentationSurface } from "@zcode/core";
@@ -43,6 +43,8 @@ import type {
 } from "./cli-types.js";
 import { workspaceTrustCommandArgument } from "./hooks-trust-command.js";
 import { createRunEnding, type RunEnding } from "./fork/unattended-run/index.js";
+// fork(per-run-model): use the registry to validate the requested selection
+import { validateRunModelSelection } from "./fork/per-run-model/index.js";
 
 /**
  * Does this run print a JSON summary at the end?
@@ -83,6 +85,8 @@ export const runPrompt = async (
   toolsearchMode: ToolSearchMode = "off",
   presentationSurface: PresentationSurface = "terminal",
   workflowMode: DynamicWorkflowMode = DEFAULT_CLI_WORKFLOW_MODE,
+  // fork(per-run-model): an explicit invocation can supply a model selection
+  runModelSelection?: ModelSelection,
 ): Promise<number> => {
   // fork(unattended-run): remembers how the run ended, for its result and exit status
   const runEnding = createRunEnding();
@@ -248,6 +252,10 @@ export const runPrompt = async (
             },
           },
     );
+    // fork(per-run-model): refuse an invalid selection before creating a session or sending a prompt
+    if (runModelSelection) {
+      validateRunModelSelection(providerRegistryRuntime.runtime.registryService, runModelSelection);
+    }
     const createProviderEndpointRoutingPort =
       deps.createProviderEndpointRoutingPort ??
       bootstrapModule?.createDefaultProviderEndpointRoutingPort;
@@ -277,6 +285,8 @@ export const runPrompt = async (
         : {}),
       resume: sessionId !== undefined,
       runtimeConfig: {
+        // fork(per-run-model): initialise the session with the invocation's selection
+        ...(runModelSelection ? { modelSelection: runModelSelection } : {}),
         ...(mode ? { mode } : {}),
         ...(toolDisallowlist ? { toolDisallowlist } : {}),
         toolSearch: { mode: toolsearchMode },

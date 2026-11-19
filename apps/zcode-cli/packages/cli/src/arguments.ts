@@ -1,4 +1,6 @@
 import { parseArgs } from "node:util";
+// fork(per-run-model): model selection options for the CLI parser
+import { RUN_MODEL_ARGUMENTS } from "./fork/per-run-model/index.js";
 
 export const parseGlobalArgs = (argv: string[]) =>
   parseArgs({
@@ -31,6 +33,8 @@ export const parseGlobalArgs = (argv: string[]) =>
         short: "p",
         type: "string",
       },
+      // fork(per-run-model): model selection for one headless run
+      ...RUN_MODEL_ARGUMENTS,
       "memory-bench": {
         type: "boolean",
       },
