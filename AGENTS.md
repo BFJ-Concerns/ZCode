@@ -1,3 +1,11 @@
+<!-- fork(base): this checkout is a fork; its own rules come before upstream's -->
+
+## This checkout is a fork
+
+This repository is a private fork of ZCode that builds, runs and proves only the terminal UI and the command line. Before changing anything, read [fork/README.md](fork/README.md): it says where the fork's code lives, how it joins upstream's files, how to build, and which two commands gate a change (`node fork/check.mjs` and `node fork/rungs.mjs`).
+
+Everything below, and every other `AGENTS.md` in the tree, is upstream's guidance for its own repository. Follow what it says about the code. Its process (a spec before a change, architecture adoption, root `pnpm typecheck` and `pnpm lint`, the pre-push checks, comments in Chinese) does not govern fork work; `fork/README.md` does.
+
 ## 核心原则
 
 - 新增或修改行为前，先更新对应 spec；目录不存在时按需创建。先明确产品规则、状态所有者、接口和验收场景，再实现代码。
