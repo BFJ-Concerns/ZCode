@@ -19,7 +19,9 @@
  *
  * A difference is told apart by its name, wherever the name appears in a commit: a
  * `src/fork/<name>/` directory, a `fork/rungs/<name>/` directory, or a `fork(<name>): `
- * join marker (fork/README.md). A commit whose names all belong to a difference already
+ * join marker in a file upstream ships (fork/README.md); text in the fork's own files is
+ * never read as a marker. A commit is the unit of a difference: one that brings in new
+ * names is one difference carrying them all. A commit whose names all belong to a difference already
  * on the fork is a repair of that difference, and is folded into its commit on the way,
  * so that the fork on the release is the release plus one commit for each difference.
  * A commit that names nothing else belongs to the fork's ground, `base`.
@@ -74,7 +76,17 @@ function namesIn(commit) {
       if (match) names.add(match[1]);
     }
   }
-  const patch = git(["show", "--format=", "--unified=0", commit, "--", ".", ":!fork/README.md"]);
+  // Joins are edits to upstream's files; the fork's own files may quote a marker freely.
+  const patch = git([
+    "show",
+    "--format=",
+    "--unified=0",
+    commit,
+    "--",
+    ".",
+    ":(exclude)fork/",
+    ":(exclude,glob)**/src/fork/**",
+  ]);
   for (const line of patch.split("\n")) {
     if (!/^[+-](?![+-]{2} )/.test(line)) continue;
     for (const match of line.matchAll(JOIN_MARKER)) names.add(match[1]);
@@ -277,6 +289,9 @@ function proofText(proof) {
   const rungs = proof.rungFiles
     ? `; ${proof.rungFiles.passed} of ${proof.rungFiles.of} rung files, ${proof.tests} tests`
     : "";
+  if (proof.leftChanges?.length > 0) {
+    return `the gates changed ${listed(proof.leftChanges.map(code))}${rungs}`;
+  }
   if (proof.failedGate) {
     const failed = proof.failed.length > 0 ? `: ${listed(proof.failed.map(code))}` : "";
     return `${code(proof.failedGate)} failed${failed}${rungs}`;
@@ -427,6 +442,11 @@ const treeOf = (commit) => git(["rev-parse", `${commit}^{tree}`]);
 const branchExists = (branch) =>
   git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFailure: true })
     .status === 0;
+/** Files in the worktree that differ from its commit, untracked ones included. */
+const uncommitted = (worktree) =>
+  lines(git(["status", "--porcelain", "--untracked-files=all"], { cwd: worktree })).map((line) =>
+    line.slice(3),
+  );
 const cherryPickInProgress = (worktree) =>
   git(["rev-parse", "--verify", "--quiet", "CHERRY_PICK_HEAD"], {
     cwd: worktree,
@@ -580,6 +600,14 @@ function resume(state) {
         "git cherry-pick --continue, or give it up with git cherry-pick --abort, then run this again.",
     );
   }
+  const changed = uncommitted(state.worktree);
+  if (changed.length > 0) {
+    throw new Refusal(
+      `${state.worktree} holds changes no commit holds: ${changed.join(", ")}. Only committed ` +
+        "rework is gated and brought in, so commit it (or amend the step) or discard it, " +
+        "then run this again.",
+    );
+  }
   const branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"], {
     cwd: state.worktree,
     allowFailure: true,
@@ -645,11 +673,24 @@ function replay(state) {
     const atTop = step.commit === HEAD(state.worktree);
     if (!atTop) git(["checkout", "--quiet", "--detach", step.commit], { cwd: state.worktree });
     step.proof = runGates(state.worktree, state.gates, state.gateLog);
+    // What passed must be what the commit holds, not files the gates changed beside it.
+    step.proof.leftChanges = uncommitted(state.worktree);
+    if (step.proof.leftChanges.length > 0) {
+      git(["checkout", "--quiet", "--", "."], { cwd: state.worktree });
+    }
     if (!atTop) git(["switch", "--quiet", state.intakeBranch], { cwd: state.worktree });
-    step.status = step.proof.failedGate ? "failed" : "passed";
+    const failed = step.proof.failedGate || step.proof.leftChanges.length > 0;
+    step.status = failed ? "failed" : "passed";
     save(state);
     if (step.proof.failedGate) {
       return stopAt(state, `With it replayed, ${code(step.proof.failedGate)} fails.`);
+    }
+    if (failed) {
+      return stopAt(
+        state,
+        `The gates changed ${listed(step.proof.leftChanges.map(code))}, so what they ` +
+          "passed is not what its commit holds.",
+      );
     }
   }
   state.head = HEAD(state.worktree);

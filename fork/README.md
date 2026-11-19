@@ -231,13 +231,17 @@ joins. `--account <file>` also writes the account to a file.
 The process tells differences apart by their names (see [Differences](#differences)).
 A later commit that carries only names an earlier difference holds is a repair of that
 difference, and is folded into its commit as the release is brought in. A commit that
-carries no name belongs to `base`. A commit that changes two differences together
-cannot be attributed to either, so the process stops before replaying anything and
-names the commit.
+carries no name belongs to `base`. A commit is the unit of a difference, so one that
+brings in several new names is one difference carrying them all, and the account
+labels it with each. A later commit that changes two differences together cannot be
+attributed to either, so the process stops before replaying anything and names the
+commit. Only markers in files upstream ships count: text in `fork/` or a `src/fork/`
+directory is never read as a join.
 
 To rework a broken difference, fix it in the worktree: resolve the conflict and
-`git cherry-pick --continue`, or amend the commit. Then run the same command again. It
-gates the reworked step and carries on with the next difference. Rework may change how
+`git cherry-pick --continue`, or amend the commit. Then run the same command again. Only
+committed rework counts: the process refuses to go on while the worktree holds changes
+no commit holds. It gates the reworked step and carries on with the next difference. Rework may change how
 a difference is done but not what it promises, and it may not weaken its rungs; a change
 to either goes to the owner. When upstream comes to provide what a difference added, the
 difference keeps its rungs and loses its code.

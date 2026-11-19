@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -95,11 +95,12 @@ function forkAndRelease(t, release, { fork = forkOfThree } = {}) {
 
 function forkOfThree(repository) {
   commit(repository, "fork: gate the fork", {
-    "fork/gate.mjs": GATE_SOURCE,
+    // The fork's own files may quote a marker; it names no difference there.
+    "fork/gate.mjs": `${GATE_SOURCE}// a join reads "// fork(gamma): what the fork does"\n`,
     "fork/rungs/base/stand-in.rung.mjs": "",
   });
   commit(repository, "alpha: call alpha", {
-    "app/src/fork/alpha/index.ts": ["export const alpha = 1;"],
+    "app/src/fork/alpha/index.ts": ["export const alpha = 1; // not a join: fork(beta): "],
     "app/src/a.ts": withLine(numbered("a"), 2, "a 2", "// fork(alpha): calls alpha", "alpha();"),
   });
   commit(repository, "beta: change line five", {
@@ -239,6 +240,36 @@ test("a release that fails the gates with a difference replayed stops at that di
     /\*\*alpha\*\* \(1 repair folded in\): .*`node fork\/gate\.mjs` failed: `fork\/rungs\/stand-in\.rung\.mjs`/,
   );
   assert.match(account, /\*\*beta\*\*: not reached\./);
+});
+
+test("rework left uncommitted is refused, and the fork stays where it was", (t) => {
+  const { root, repository, forkTip } = forkAndRelease(t, (repository) => {
+    commit(repository, "chore: sync source v2.0.0", {
+      "app/src/a.ts": withLine(numbered("a"), 9, "a 9 gate fails"),
+    });
+  });
+  assert.equal(bringIn(repository).exitCode, 1);
+
+  // The fix that would pass the gate is made in the worktree but never committed.
+  const worktree = join(root, "repository-Worktrees", "bring-in-v2.0.0");
+  const fixed = readFileSync(join(worktree, "app/src/a.ts"), "utf8").replace("gate fails", "");
+  writeFileSync(join(worktree, "app/src/a.ts"), fixed);
+  const refused = bringIn(repository);
+
+  assert.equal(refused.exitCode, 2, `${refused.account}${refused.stderr}`);
+  assert.match(refused.stderr, /holds changes no commit holds: app\/src\/a\.ts/);
+  assert.equal(git(repository, "rev-parse", "fork"), forkTip);
+  assert.equal(existsSync(worktree), true);
+
+  git(worktree, "commit", "--quiet", "--all", "--amend", "--no-edit");
+  const resumed = bringIn(repository);
+
+  assert.equal(resumed.exitCode, 0, `${resumed.account}${resumed.stderr}`);
+  assert.doesNotMatch(git(repository, "show", "fork~1:app/src/a.ts"), /gate fails/);
+  assert.match(
+    resumed.account,
+    /\*\*alpha\*\* \(1 repair folded in\): .*reworked; `node fork\/gate\.mjs` passed/,
+  );
 });
 
 test("a fork checked out in a worktree stays put, with the release ready on its own branch", (t) => {
