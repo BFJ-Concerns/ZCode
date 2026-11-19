@@ -108,8 +108,8 @@ export function loadFileConfig(filePath?: string, options: FileConfigOptions = {
 
     return {
       config: result.config,
-      // fork(searxng-search): keeps the endpoint outside the workspace config merge
-      searxngUrl: readOwnerSearxngUrl(parsed, options.scope),
+      // fork(searxng-config-diagnostics): reports an unusable owner endpoint with the other configuration problems
+      searxngUrl: readOwnerSearxngUrl(parsed, result.diagnostics, options.scope),
       diagnostics: attachDiagnosticFilePath(result.diagnostics, resolvedPath),
       path: resolvedPath,
       loaded: true,

@@ -342,6 +342,8 @@ export type ConfigDiagnosticSeverity = "warning" | "error";
 export type ConfigDiagnosticCode =
   | "config_file_invalid"
   | "config_mcp_server_invalid"
+  // fork(searxng-config-diagnostics): identifies skipped owner search configuration
+  | "config_searxng_url_invalid"
   | "config_project_hooks_pending_trust";
 
 export interface ConfigDiagnostic {
