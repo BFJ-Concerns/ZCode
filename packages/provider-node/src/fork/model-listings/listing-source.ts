@@ -28,10 +28,19 @@ import { parseModelListing, type ListedModel } from "./listing-shapes.js";
 const LISTING_TIMEOUT_MS = 5_000;
 
 /** API types whose providers serve an OpenAI-compatible `GET /models`. */
-const LISTED_API_TYPES: ReadonlySet<string> = new Set([
+const OPENAI_API_TYPES: ReadonlySet<string> = new Set([
   "openai-chat-completions",
   "openai-responses",
 ]);
+
+/**
+ * Anthropic-compatible providers (OpenRouter's template among them) are listed at
+ * `/v1/models` under the base URL, where their requests go to `/v1/messages`.
+ */
+const ANTHROPIC_API_TYPE = "anthropic-messages";
+
+/** A built-in rule that holds for every model, as opposed to one written for particular models. */
+const EVERY_MODEL = ".*";
 
 /**
  * Asks a CLIProxyAPI gateway for its client catalogue, the one listing it serves with
@@ -57,6 +66,9 @@ type ListingRead =
 
 interface ListingRequest {
   readonly providerId: string;
+  readonly templateId?: string;
+  readonly apiType: string;
+  readonly baseUrl: string;
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
 }
@@ -102,15 +114,16 @@ class ModelListingConfigSource implements ProviderSource<ProviderConfigSnapshot>
 
   async read(): Promise<ProviderConfigSnapshot> {
     const configured = await this.#inner.read();
+    const requests = listingRequests(configured);
     const results = await Promise.all(
-      listingRequests(configured).map(
+      requests.map(
         async (request): Promise<ModelListingResult> => ({
           providerId: request.providerId,
           ...(await this.#readListing(request)),
         }),
       ),
     );
-    return joinListings(configured, results);
+    return joinListings(configured, requests, results);
   }
 
   onDidChange(listener: (reason: string) => void): () => void {
@@ -151,19 +164,44 @@ function listingRequests(snapshot: ProviderConfigSnapshot): readonly ListingRequ
   return snapshot.personalProviders.rules().flatMap((rule): ListingRequest[] => {
     if (rule.enabled === false) return [];
     const config = effectiveProviderConfig(snapshot, rule);
-    const baseUrl = config.api?.baseUrl?.trim();
-    if (!baseUrl || !config.api?.type || !LISTED_API_TYPES.has(config.api.type)) return [];
+    const baseUrl = config.api?.baseUrl?.trim().replace(/\/+$/, "");
+    const apiType = config.api?.type;
+    if (!baseUrl || !apiType) return [];
     if (!isApiKeyAccess(config.access) || !config.access.apiKey) return [];
-    return [
-      {
-        providerId: rule.providerId,
-        url: `${baseUrl.replace(/\/+$/, "")}/models?${CLIPROXYAPI_CATALOGUE_QUERY}`,
-        headers: {
-          ...config.api.headers,
-          authorization: `Bearer ${config.access.apiKey}`,
+    const apiKey = config.access.apiKey;
+    const templateId =
+      rule.templateId ?? snapshot.zcodeBuiltinProviders.getRule(rule.providerId)?.templateId;
+    const identity = {
+      providerId: rule.providerId,
+      ...(templateId ? { templateId } : {}),
+      apiType,
+      baseUrl,
+    };
+    if (OPENAI_API_TYPES.has(apiType)) {
+      return [
+        {
+          ...identity,
+          url: `${baseUrl}/models?${CLIPROXYAPI_CATALOGUE_QUERY}`,
+          headers: { ...config.api?.headers, authorization: `Bearer ${apiKey}` },
         },
-      },
-    ];
+      ];
+    }
+    if (apiType === ANTHROPIC_API_TYPE) {
+      const versioned = /\/v1$/i.test(baseUrl) ? baseUrl : `${baseUrl}/v1`;
+      return [
+        {
+          ...identity,
+          url: `${versioned}/models?${CLIPROXYAPI_CATALOGUE_QUERY}`,
+          // The same two credentials the Anthropic-compatible requests carry.
+          headers: {
+            ...config.api?.headers,
+            authorization: `Bearer ${apiKey}`,
+            "x-api-key": apiKey,
+          },
+        },
+      ];
+    }
+    return [];
   });
 }
 
@@ -185,6 +223,7 @@ function effectiveProviderConfig(
 
 function joinListings(
   snapshot: ProviderConfigSnapshot,
+  requests: readonly ListingRequest[],
   results: readonly ModelListingResult[],
 ): ProviderConfigSnapshot {
   const listed = new Map(
@@ -204,8 +243,15 @@ function joinListings(
       ? config
       : config.withPersonalModelIds([...(config.personalModelIds ?? []), ...added]);
   });
-  const listingRules = [...listed].flatMap(([providerId, models]) =>
-    models.flatMap((model) => listingRule(providerId, model)),
+  const everyModelRules = new ModelConfigRules(
+    snapshot.zcodeBuiltinModelRules
+      .rules()
+      .filter((rule) => "modelMatch" in rule && rule.modelMatch === EVERY_MODEL),
+  );
+  const listingRules = requests.flatMap((request) =>
+    (listed.get(request.providerId) ?? []).map((model) =>
+      listingRule(request, model, everyModelRules),
+    ),
   );
   return Object.freeze({
     ...snapshot,
@@ -219,17 +265,37 @@ function joinListings(
   });
 }
 
-function listingRule(providerId: string, model: ListedModel): ModelConfigRule[] {
+/**
+ * A listed model is offered whatever the built-in rules say of it. Listed reasoning
+ * levels are sent the way the provider's API sends any level: a built-in mapping written
+ * for one model's own level names could turn a listed level into no reasoning at all.
+ */
+function listingRule(
+  request: ListingRequest,
+  model: ListedModel,
+  everyModelRules: ModelConfigRules,
+): ModelConfigRule {
   const { contextWindow, maxOutputTokens, reasoningLevels } = model;
-  if (contextWindow === undefined && maxOutputTokens === undefined && !reasoningLevels) return [];
+  const reasoningMap = reasoningLevels
+    ? everyModelRules.resolve({ ...request, modelId: model.modelId }).optionSpecs?.reasoningLevel
+        ?.map
+    : undefined;
   const config = new ModelConfig({
+    enabled: true,
     ...(contextWindow === undefined
       ? {}
       : { properties: new ModelPropertiesConfig({ contextWindow }) }),
     optionSpecs: new ModelOptionSpecsConfig({
-      ...(reasoningLevels ? { reasoningLevel: { values: [...reasoningLevels] } } : {}),
+      ...(reasoningLevels
+        ? {
+            reasoningLevel: {
+              values: [...reasoningLevels],
+              ...(reasoningMap === undefined ? {} : { map: reasoningMap }),
+            },
+          }
+        : {}),
       ...(maxOutputTokens === undefined ? {} : { maxOutputTokens: { max: maxOutputTokens } }),
     }),
   });
-  return [{ type: "provider-model", providerId, modelId: model.modelId, config }];
+  return { type: "provider-model", providerId: request.providerId, modelId: model.modelId, config };
 }

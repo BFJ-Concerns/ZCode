@@ -16,7 +16,16 @@ import { cliProxyApiCatalogue, openRouterListing } from "./listings.mjs";
 /** A stand-in serving `listing`, and a home whose configuration names only `modelIds`. */
 async function ownerWithListing(
   t,
-  { listing, script, modelIds = ["configured-model"], modelRules, defaultModelId, reasoningLevel },
+  {
+    listing,
+    script,
+    modelIds = ["configured-model"],
+    modelRules,
+    defaultModelId,
+    reasoningLevel,
+    apiType,
+    templateId,
+  },
 ) {
   const provider = await startModelProvider({ listing, script });
   t.after(() => provider.close());
@@ -25,6 +34,9 @@ async function ownerWithListing(
     modelIds,
     defaultModelId: defaultModelId ?? modelIds[0],
   });
+  const [providerRule] = providerConfig.config.providerConfigRules.providerRules;
+  if (apiType) providerRule.config.api.type = apiType;
+  if (templateId) providerRule.templateId = templateId;
   if (modelRules) providerConfig.config.modelConfigRules.providerModelRules.push(...modelRules);
   // A default without a reasoning level is passed over for the first model listed.
   if (reasoningLevel) providerConfig.config.defaultModelSelection.options = { reasoningLevel };
@@ -177,3 +189,70 @@ for (const [condition, listing] of [
     assert.ok(limitsOf(printed, "configured-model"), "the configured model is still offered");
   });
 }
+
+test("an Anthropic-compatible provider's listing is read too, at /v1/models with both of its credentials", async (t) => {
+  const { provider, home } = await ownerWithListing(t, {
+    listing: openRouterListing,
+    apiType: "anthropic-messages",
+  });
+
+  const printed = await printedModels(t, home);
+
+  assert.deepEqual(limitsOf(printed, "vendor/reasoner"), {
+    contextWindow: 400_000,
+    maxOutputTokens: 100_000,
+    reasoningLevels: ["low", "medium", "high"],
+  });
+  const listingRequest = provider.requests.find(({ path }) => path.startsWith("/v1/models"));
+  assert.equal(listingRequest.headers.authorization, "Bearer stand-in-key");
+  assert.equal(listingRequest.headers["x-api-key"], "stand-in-key");
+});
+
+test("a listed model is offered even where a built-in rule switches it off", async (t) => {
+  // The built-in rules switch kimi-k2.6 off for providers made from this template.
+  const unlisted = await printedModels(
+    t,
+    (await ownerWithListing(t, { modelIds: ["kimi-k2.6"], templateId: "opencode-go-chat" })).home,
+  );
+  assert.equal(
+    unlisted.models.some(({ model }) => model === "kimi-k2.6"),
+    false,
+    "the built-in rule switches the model off when nothing lists it",
+  );
+  const { home } = await ownerWithListing(t, {
+    listing: { models: [{ slug: "kimi-k2.6", context_window: 256_000, max_tokens: 32_000 }] },
+    templateId: "opencode-go-chat",
+  });
+
+  const printed = await printedModels(t, home);
+
+  assert.equal(limitsOf(printed, "kimi-k2.6").contextWindow, 256_000);
+});
+
+test("a listed reasoning level reaches the model as that level, whatever a built-in mapping expects", async (t) => {
+  // kimi-k2.6's built-in mapping knows only "enabled" and "disabled", and sends any other level as disabled.
+  const { provider, home } = await ownerWithListing(t, {
+    listing: {
+      models: [
+        {
+          slug: "kimi-k2.6",
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }],
+        },
+      ],
+    },
+    modelIds: [],
+    defaultModelId: "kimi-k2.6",
+    reasoningLevel: "high",
+    script: [say("Reasoned.")],
+  });
+
+  const run = launch({ home, prompt: "Think hard." });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  const [request] = provider.modelRequests();
+  assert.equal(request.body.model, "kimi-k2.6");
+  assert.equal(request.body.reasoning_effort, "high");
+  assert.notEqual(request.body.thinking?.type, "disabled");
+});
