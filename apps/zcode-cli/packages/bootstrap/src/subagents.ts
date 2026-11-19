@@ -9,6 +9,7 @@ import {
   type AgentProfileParseDiagnostic,
 } from "@zcode/core";
 import type { Logger, PluginMetadata } from "@zcode/contracts";
+import { withoutAccountOnlyModel } from "./fork/zai-silence/index.js";
 import {
   createPluginAgentStateId,
   parsePluginSubagentModelSelectionOverrides,
@@ -147,7 +148,8 @@ export function resolvePluginAgentProfiles(
       input.modelSelectionOverrides?.[createPluginAgentStateId(parsed.plugin.id, parsed.bareName)];
     // 先替换完整选择再展开别名，避免同一插件的两个调用入口使用不同模型/档位。
     const canonical = {
-      ...namespacePluginAgentProfile(parsed),
+      // fork(zai-silence): an agent pinned to an account-only model runs on the session's model
+      ...withoutAccountOnlyModel(namespacePluginAgentProfile(parsed)),
       ...(override ? { modelSelection: override } : {}),
     };
     profiles.push(canonical);

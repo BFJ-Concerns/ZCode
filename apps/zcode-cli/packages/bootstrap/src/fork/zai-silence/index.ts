@@ -29,3 +29,19 @@ export function standaloneZaiAccountCredentials(): SharedZCodeCredentialStore | 
 export const directProviderEndpoints: ProviderEndpointRoutingPort = {
   resolve: async (url) => ({ routed: false, url }),
 };
+
+/** Upstream's built-in account connections, which need a Z.ai account, all take this prefix. */
+const ACCOUNT_PROVIDER_PREFIX = "account:";
+
+/**
+ * A plugin agent as the fork runs it. An agent pinned to a model of an account-only
+ * provider would name a provider the fork never has, so it runs on the session's model
+ * instead, as an agent that names no model does.
+ */
+export function withoutAccountOnlyModel<
+  Profile extends { readonly modelSelection?: { readonly providerId: string } },
+>(profile: Profile): Profile {
+  if (!profile.modelSelection?.providerId.startsWith(ACCOUNT_PROVIDER_PREFIX)) return profile;
+  const { modelSelection: _accountOnly, ...inheritsSessionModel } = profile;
+  return inheritsSessionModel as Profile;
+}
