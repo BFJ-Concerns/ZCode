@@ -84,7 +84,9 @@ export async function createOwnerHome({ providerConfig, cliConfig = {} }) {
     if (value !== undefined && INHERITED_ENVIRONMENT.test(name)) env[name] = value;
   }
 
-  return { dir, workspace, env, remove: () => rm(dir, { recursive: true, force: true }) };
+  // Retried: a terminal UI that was just ended can still be writing its last files here.
+  const remove = () => rm(dir, { recursive: true, force: true, maxRetries: 10 });
+  return { dir, workspace, env, remove };
 }
 
 async function writeJson(path, value) {

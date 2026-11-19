@@ -63,7 +63,8 @@ test("with no usable model, the terminal UI's start-up, model picker and command
 
   await ui.submit("/login");
   await ui.shows("Unknown command: /login");
-  await ui.quit();
+  // Ended before the home is removed; quitting with Ctrl-C is not what this observes.
+  await ui.dispose();
 });
 
 test("the command line has no sign-in commands", async (t) => {
