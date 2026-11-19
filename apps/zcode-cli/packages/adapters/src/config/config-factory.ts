@@ -77,6 +77,8 @@ export interface ConfigResult {
   config: RuntimeConfig;
   sources: {
     user: {
+      // fork(searxng-search): carries the endpoint from the owner file
+      searxngUrl?: string;
       diagnostics: LoadedConfig["diagnostics"];
       path: string;
       loaded: boolean;
@@ -347,6 +349,8 @@ function assembleConfig(options: ConfigFactoryOptions, sources: LoadedConfigSour
     config: configPort.getAll(),
     sources: {
       user: {
+        // fork(searxng-search): passes through the owner search endpoint
+        searxngUrl: userConfigResult.searxngUrl,
         diagnostics: userConfigResult.diagnostics,
         path: userConfigResult.path,
         loaded: userConfigResult.loaded,
