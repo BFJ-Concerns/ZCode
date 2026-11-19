@@ -1,3 +1,5 @@
+// fork(per-run-model): preserve the invocation's selection at the resume boundary
+import { resolveResumedRunModel } from "../fork/per-run-model/index.js";
 import { createWorkspaceMcpTrust } from "../workspace-mcp-trust/index.js";
 import { subagentProfilesFromSnapshot } from "../runtime-subagents/index.js";
 import { CliDefaultSelection } from "./cli-default-selection.js";
@@ -679,6 +681,8 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
           sessionId,
         });
       }
+      // fork(per-run-model): an explicit headless selection takes precedence on resume
+      selection = resolveResumedRunModel(options, selection);
       const validation = selection && registry.validateSelection(selection);
       if (selection && validation && !validation.ok) {
         // 观测：校验失败只影响运行绑定、不影响保存意图；但一旦不绑定，之后若只发送 execution 作用域的

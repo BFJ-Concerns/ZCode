@@ -24,12 +24,14 @@ const INHERITED_ENVIRONMENT = /^(PATH|LANG|LC_ALL|TERM|TMPDIR)$/;
  * @param {string} [options.providerId]
  * @param {string[]} [options.modelIds]     Models the configuration file itself names.
  * @param {string} [options.defaultModelId] Defaults to the first of `modelIds`.
+ * @param {string} [options.defaultReasoningLevel] Makes the default selection complete for the registry.
  */
 export function providerConfiguration({
   baseUrl,
   providerId = "stand-in",
   modelIds = ["stand-in-model"],
   defaultModelId = modelIds[0],
+  defaultReasoningLevel,
 }) {
   return {
     schemaVersion: 1,
@@ -49,7 +51,17 @@ export function providerConfiguration({
         ],
       },
       modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
-      ...(defaultModelId ? { defaultModelSelection: { providerId, modelId: defaultModelId } } : {}),
+      ...(defaultModelId
+        ? {
+            defaultModelSelection: {
+              providerId,
+              modelId: defaultModelId,
+              ...(defaultReasoningLevel === undefined
+                ? {}
+                : { options: { reasoningLevel: defaultReasoningLevel } }),
+            },
+          }
+        : {}),
     },
   };
 }
