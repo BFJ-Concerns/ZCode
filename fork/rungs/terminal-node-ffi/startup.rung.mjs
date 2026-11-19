@@ -6,7 +6,18 @@ import { openTerminalUi } from "../../harness/terminal-ui.mjs";
 
 test("the built terminal UI accepts a prompt without Node flags", async (t) => {
   const reply = "Terminal startup confirmed.";
-  const provider = await startModelProvider({ script: [say(reply)] });
+  const provider = await startModelProvider({
+    script: ({ body }) => {
+      // Session title generation can reach the provider before the interactive turn.
+      const titleRequest = body.messages.some(
+        ({ role, content }) =>
+          role === "system" &&
+          typeof content === "string" &&
+          content.startsWith("Generate a concise title for this coding session."),
+      );
+      return titleRequest ? say('{"title":"Terminal startup check"}') : say(reply);
+    },
+  });
   t.after(() => provider.close());
   const home = await createOwnerHome({
     providerConfig: providerConfiguration({ baseUrl: provider.baseUrl }),
