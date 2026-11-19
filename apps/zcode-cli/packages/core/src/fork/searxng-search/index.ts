@@ -157,6 +157,7 @@ async function search(
       url: url.href,
       headers: { accept: "application/json" },
       redirect: "manual",
+      trace: context.traceContext ?? { traceId: context.traceId },
       timeoutMs: SEARCH_TIMEOUT_MS,
       maxResponseBytes: 2 * 1024 * 1024,
     },

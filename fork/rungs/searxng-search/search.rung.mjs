@@ -65,6 +65,7 @@ async function run(t, home, prompt) {
   const outcome = await process.outcome;
   assert.equal(outcome.exitCode, 0, outcome.stderr);
   assert.equal(outcome.result?.response, "Done.");
+  return outcome.result;
 }
 
 function offeredSearches(request) {
@@ -92,7 +93,8 @@ async function checkConfiguredSearch(t, nativeSearch) {
       say("Done."),
     ],
   });
-  await run(t, home, "Search the web and find an image.");
+  const { traceId } = await run(t, home, "Search the web and find an image.");
+  assert.ok(traceId, "the run reports its trace ID");
 
   const requests = provider.modelRequests();
   assert.equal(requests.length, 3);
@@ -101,8 +103,8 @@ async function checkConfiguredSearch(t, nativeSearch) {
     assert.deepEqual(offeredSearches(request), ["ImageSearch", "WebSearch"]);
   }
   assert.deepEqual(search.queries, [
-    { q: WEB_QUERY, params: { q: WEB_QUERY, format: "json", categories: "general" } },
-    { q: IMAGE_QUERY, params: { q: IMAGE_QUERY, format: "json", categories: "images" } },
+    { q: WEB_QUERY, params: { q: WEB_QUERY, format: "json", categories: "general" }, traceId },
+    { q: IMAGE_QUERY, params: { q: IMAGE_QUERY, format: "json", categories: "images" }, traceId },
   ]);
   const webReply = toolMessages(requests[1]);
   assert.ok(webReply.includes(WEB_RESULT.url));
