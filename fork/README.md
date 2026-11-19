@@ -76,9 +76,15 @@ upstream release can conflict with the fork, so:
   Logic, constants and messages live in the difference's directory, not in upstream's
   file.
 - The line above a join is a comment `fork(<difference>): ` followed by what the fork
-  does at that point, in the file's own comment syntax. `git grep -n "fork("` then lists
-  every join, and a conflict names the difference it belongs to. A file format with no
-  comments (JSON) takes the edit unmarked.
+  does at that point, in the file's own comment syntax. A conflict names the difference
+  it belongs to. To list the marked joins, run:
+
+  ```sh
+  git grep -nE 'fork\([a-z0-9-]+\): ' -- . ':(exclude)fork/README.md'
+  ```
+
+  A file format with no comments (JSON) takes the edit unmarked.
+
 - A join sits beside the upstream line it relates to: a new option next to the option
   it resembles, a new command next to its neighbour in the `switch`. Do not append to the
   end of a list because the entry is new. Differences built at the same time then edit
@@ -141,8 +147,9 @@ namespaces:
 - Everything that tries to leave is refused at once and recorded, whichever process
   tried: `zcode`, a command the agent ran, or the rung. Host names are recorded when they
   are looked up, and every TCP or UDP destination outside loopback when a packet is sent.
-- `/tmp` and `/run` are empty and private, so the homes a rung creates vanish with the
-  sandbox and no socket on the machine can be reached.
+- `/tmp` and `/run` are empty and private, so the homes a rung creates there vanish
+  with the sandbox. The rest of the host filesystem remains readable wherever
+  your user has access, including your real home directory.
 - The rung and every `zcode` it launches run as you, not as root, and every process
   left running dies when the file finishes.
 
