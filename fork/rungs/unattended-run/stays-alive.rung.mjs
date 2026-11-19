@@ -2,7 +2,8 @@
  * A non-interactive run stays alive while its own work can still wake the model: a
  * background command, a background subagent or a workflow the run started keeps it
  * running after its turn ends, the model is woken when that work finishes, and the run
- * exits after the woken turn. A scheduled automation is not such work.
+ * exits after the woken turn. A scheduled automation is not such work: a non-interactive
+ * run is not offered the tools that make one, so none can hold it open.
  *
  * The background work in these rungs waits for a file the rung creates, so the run is
  * observed waiting for as long as the rung chooses, with no clock involved.
@@ -18,8 +19,12 @@ import { createOwnerHome, providerConfiguration } from "../../harness/owner-home
 
 const RELEASE_FILE = "release";
 const FINISHED_MARKER = "background-work-finished";
-/** Waits in the workspace until the rung creates the release file, then says so. */
-const WAIT_FOR_RELEASE = `until [ -e ${RELEASE_FILE} ]; do sleep 0.1; done; echo ${FINISHED_MARKER}`;
+/**
+ * Waits in the workspace until the rung creates the release file, then says so. The
+ * marker is split in the command's own text, so that the call that started the command
+ * never reads as its having finished.
+ */
+const WAIT_FOR_RELEASE = `until [ -e ${RELEASE_FILE} ]; do sleep 0.1; done; echo background-work-''finished`;
 
 async function ownerWithProvider(t, script) {
   const provider = await startModelProvider({ script });
@@ -46,6 +51,19 @@ const toolResultCount = (request) =>
 const mentions = (request, text) => JSON.stringify(request.body.messages).includes(text);
 
 /**
+ * Whether the request tells the model the background work has finished: a background
+ * command's completion notice, or a subagent's or workflow's answer carrying the marker.
+ */
+const reportsFinishedWork = (request) =>
+  mentions(request, "<status>completed</status>") || mentions(request, FINISHED_MARKER);
+
+/** Whether the request asks the model to judge whether the session's goal is complete. */
+const verifiesGoal = (request) =>
+  JSON.stringify(request.body.messages.at(-1)?.content ?? "").includes(
+    "Verify whether the active session goal is actually complete",
+  );
+
+/**
  * Starts the run, waits for its first turn to end, checks it is still running, lets the
  * background work finish, and returns how the run ended.
  */
@@ -65,7 +83,7 @@ function assertWokenAfterTheWork(outcome, provider) {
   assert.deepEqual(outcome.result.turnResponses, ["Started.", "Woken by the finished work."]);
   const woken = provider
     .modelRequests()
-    .find((request) => mentions(request, "Started.") && mentions(request, FINISHED_MARKER));
+    .find((request) => mentions(request, "Started.") && reportsFinishedWork(request));
   assert.ok(woken, "the model is woken with the finished work's result");
 }
 
@@ -135,7 +153,12 @@ test("a workflow keeps the run alive until the model is woken by its end", async
 
 test("a background command started under /goal keeps the run alive until the model is woken by its end", async (t) => {
   const { provider, home } = await ownerWithProvider(t, (request) => {
-    if (mentions(request, FINISHED_MARKER)) return say("Woken by the finished work.");
+    // The goal is judged complete at once, so only the background command can keep the
+    // run alive: upstream's goal loop goes on taking turns while its goal is unmet.
+    if (verifiesGoal(request)) {
+      return say(JSON.stringify({ passed: true, reason: "Started.", nextAction: "" }));
+    }
+    if (reportsFinishedWork(request)) return say("Woken by the finished work.");
     if (toolResultCount(request) === 0) {
       return callTool("Bash", {
         command: WAIT_FOR_RELEASE,
@@ -160,12 +183,12 @@ test("a background command started under /goal keeps the run alive until the mod
   assert.equal(outcome.result.outcome, "finished");
   assert.equal(outcome.result.response, "Woken by the finished work.");
   assert.ok(
-    provider.modelRequests().some((request) => mentions(request, FINISHED_MARKER)),
+    provider.modelRequests().some(reportsFinishedWork),
     "the model is woken with the finished work's result",
   );
 });
 
-test("a scheduled automation the model asks for does not hold the run open", async (t) => {
+test("a run is not offered a scheduled automation, and one it asks for is refused", async (t) => {
   const { provider, home } = await ownerWithProvider(t, [
     callTool("CronCreate", {
       cron: "*/20 * * * *",
@@ -173,15 +196,22 @@ test("a scheduled automation the model asks for does not hold the run open", asy
       title: "Every 20 minutes, check the build",
       recurring: true,
     }),
-    say("Scheduled."),
+    say("Not scheduled."),
   ]);
 
   const run = launch({ home, prompt: "Check the build every 20 minutes." });
   t.after(() => run.dispose());
   const outcome = await run.outcome;
 
+  const [asked, answered] = provider.modelRequests();
+  const offered = asked.body.tools.map((tool) => tool.function.name);
+  assert.ok(
+    !offered.includes("CronCreate"),
+    `no automation tool is offered: ${offered.join(", ")}`,
+  );
+  const refusal = answered.body.messages.find((message) => message.role === "tool");
+  assert.match(refusal.content, /No such tool available: CronCreate/);
   assert.equal(outcome.exitCode, 0, outcome.stderr);
   assert.equal(outcome.result.outcome, "finished");
-  assert.equal(outcome.result.response, "Scheduled.");
-  assert.equal(provider.modelRequests().length, 2, "the run ends with the turn that scheduled it");
+  assert.equal(provider.modelRequests().length, 2, "the run ends with the turn that asked");
 });
