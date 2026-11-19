@@ -329,6 +329,8 @@ export function createDefaultSubagentPort(
             bashTimeoutPolicy: this.config.bashTimeoutPolicy,
             midConversationSystem: this.config.midConversationSystem,
             toolSearch: this.config.toolSearch,
+            // fork(searxng-search): gives child sessions the owner endpoint
+            searxngUrl: this.config.searxngUrl,
             bashShellSelection,
             // child 只复用父 runtime 已解析的 instructions snapshot；Project Context 仍不继承。
             currentDate: this.contextSourceSnapshot?.currentDate ?? this.config.currentDate,
