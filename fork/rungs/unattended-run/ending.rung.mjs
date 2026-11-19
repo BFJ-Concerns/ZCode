@@ -185,6 +185,21 @@ test("a command answered without a model turn says it finished", async (t) => {
   assert.equal(typeof outcome.result.response, "string");
 });
 
+test("a command that records its input without a model turn gives the command's answer", async (t) => {
+  const { provider, home } = await ownerWithProvider(t, []);
+
+  // In plan mode a goal is set without pursuing it: the command records its objective as a
+  // turn with no answer of its own and says why it went no further.
+  const outcome = await start(t, home, "/goal Write the report.", { args: ["--mode", "plan"] })
+    .outcome;
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  assert.equal(outcome.result.outcome, "finished");
+  assert.equal(provider.modelRequests().length, 0);
+  assert.equal(typeof outcome.result.response, "string");
+  assert.notEqual(outcome.result.response.trim(), "", "the command's answer is given");
+});
+
 test("a run stopped by a signal while its background command runs says it was cancelled", async (t) => {
   const { home } = await ownerWithProvider(t, [
     backgroundCommandThatOutlivesTheTurn,

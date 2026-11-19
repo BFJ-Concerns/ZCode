@@ -85,7 +85,8 @@ export interface RunEnding {
   observerFor: (sessionId: string) => (event: SessionEvent) => void;
   /**
    * The answer of each of the run's own turns that gave one, in the order the turns
-   * ended; `[fallback]` when no turn's end was seen and `fallback` is not blank.
+   * ended; `[fallback]` when no turn gave one (a command answered without a model turn, or
+   * one that only recorded its input) and `fallback` is not blank.
    */
   answers: (fallback: string) => string[];
   /** The fields the closing result carries. */
@@ -140,7 +141,7 @@ export const createRunEnding = (): RunEnding => {
     const given = turns.flatMap((turn) =>
       turn.response !== undefined && turn.response.trim().length > 0 ? [turn.response] : [],
     );
-    if (given.length > 0 || turns.length > 0) return given;
+    if (given.length > 0) return given;
     return fallback.trim().length > 0 ? [fallback] : [];
   };
 
