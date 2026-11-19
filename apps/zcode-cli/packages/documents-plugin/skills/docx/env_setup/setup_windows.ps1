@@ -186,14 +186,18 @@ Write-Host ""
 
 # ── Step 2e: Font Installation (from CDN) ──
 Write-Host "--- [5/6] Font Installation ---"
-$FontCdnBase = "https://z-cdn.chatglm.cn/office-skill/fonts"
+# fork(zai-silence): fonts download only from a mirror the owner names, never from Z.ai's CDN
+$FontCdnBase = $env:ZCODE_FONT_SOURCE_URL
 $FontList = Join-Path $ScriptDir "font_list.txt"
 
 $UserFontDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows\Fonts"
 if (-not (Test-Path $UserFontDir)) { New-Item -ItemType Directory -Path $UserFontDir -Force | Out-Null }
 
 $Marker = Join-Path $UserFontDir ".office-skill-fonts-installed"
-if (Test-Path $Marker) {
+# fork(zai-silence): with no mirror named, the fonts already installed are the ones used
+if (-not $FontCdnBase) {
+    Write-Warn "No font mirror named: using installed fonts. Install those in $FontList, or set ZCODE_FONT_SOURCE_URL to a mirror of that layout."
+} elseif (Test-Path $Marker) {
     Write-Ok "Fonts already installed (marker found). To re-install, delete $Marker"
 } else {
     if (-not (Test-Path $FontList)) {

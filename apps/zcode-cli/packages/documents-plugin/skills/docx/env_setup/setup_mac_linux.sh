@@ -183,7 +183,8 @@ echo ""
 
 # ── Step 2f: Font Installation (from CDN) ──
 echo "--- [6/7] Font Installation ---"
-FONT_CDN_BASE="https://z-cdn.chatglm.cn/office-skill/fonts"
+# fork(zai-silence): fonts download only from a mirror the owner names, never from Z.ai's CDN
+FONT_CDN_BASE="${ZCODE_FONT_SOURCE_URL:-}"
 FONT_LIST="$SCRIPT_DIR/font_list.txt"
 
 if [ "$PLATFORM" = "mac" ]; then
@@ -194,7 +195,10 @@ fi
 mkdir -p "$USER_FONT_DIR"
 
 MARKER="$USER_FONT_DIR/.office-skill-fonts-installed"
-if [ -f "$MARKER" ]; then
+# fork(zai-silence): with no mirror named, the fonts already installed are the ones used
+if [ -z "$FONT_CDN_BASE" ]; then
+    warn "No font mirror named: using installed fonts. Install those in $FONT_LIST with your package manager, or set ZCODE_FONT_SOURCE_URL to a mirror of that layout."
+elif [ -f "$MARKER" ]; then
     ok "Fonts already installed (marker found). To re-install, delete $MARKER"
 else
     if [ ! -f "$FONT_LIST" ]; then
