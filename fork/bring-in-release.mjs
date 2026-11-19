@@ -175,7 +175,7 @@ function cliPackages(worktree) {
   if (listing.status !== 0) return undefined;
   try {
     const packages = JSON.parse(listing.stdout).map((p) => p.path.slice(worktree.length + 1));
-    return packages.length > 0 ? packages.sort() : undefined;
+    return packages.length > 0 ? packages.sort((a, b) => b.length - a.length) : undefined;
   } catch {
     return undefined;
   }
@@ -374,6 +374,11 @@ function account(state) {
         out.push(`- The command line now also builds from ${listed(added.map(code))}.`);
       }
       if (dropped.length > 0) out.push(`- It no longer builds from ${listed(dropped.map(code))}.`);
+    } else {
+      out.push(
+        "- The packages the command line builds from could not be listed, so the changes are " +
+          "not broken down by package.",
+      );
     }
     if (state.changes.some((change) => change.to === "pnpm-lock.yaml")) {
       out.push("- The lockfile changed: the installed dependencies differ.");
