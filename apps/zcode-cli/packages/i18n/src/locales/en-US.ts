@@ -1,4 +1,6 @@
 import type { ZCodeCopy } from "../types.js";
+// fork(per-run-model): list the models command and selection flags in help
+import { enUSRunModelHelp } from "../fork/per-run-model/index.js";
 
 export const enUS: ZCodeCopy = {
   locale: "en-US",
@@ -20,6 +22,7 @@ Commands:
   doctor     Inspect runtime and packaging assumptions
   login [zai|bigmodel]  Sign in through browser authorization
   logout     Remove the shared Z.AI login credentials
+${enUSRunModelHelp.models}
   plugins    Manage plugins and marketplaces (\`plugins list|install|uninstall|enable|disable|update|validate|marketplace ...\`; alias: plugin)
   skills     List local skills (\`skills list\`)
   tui        Open the terminal UI
@@ -29,6 +32,7 @@ Options:
   -h, --help       Show help
   -v, --version    Show version
   -p, --prompt <text>  Run a single prompt without opening the TUI
+${enUSRunModelHelp.options}
   --memory-bench   With --prompt, enable automatic Memory extraction and wait before exiting (requires Memory enabled)
   --browser-use <mode> Enable Browser Use backend (supported: headless)
   --surface <surface>  Presentation surface for headless prompts/app-server: terminal or desktop
