@@ -28,6 +28,8 @@ const REJECTED = 400;
 const REJECTION = "the stand-in rejects this request";
 const SIGINT_STATUS = 130;
 const SIGTERM_STATUS = 143;
+/** A run whose turn was cancelled with no signal behind it exits as an interrupted one does. */
+const CANCELLED_STATUS = 130;
 
 async function ownerWithProvider(t, script) {
   const provider = await startModelProvider({ script });
@@ -210,6 +212,45 @@ test("a run stopped by a signal while the model is answering says it was cancell
   assert.equal(outcome.exitCode, SIGINT_STATUS);
   assert.equal(outcome.result.outcome, "cancelled");
   assertResultIsLast(outcome);
+});
+
+/**
+ * A model that interrupts its own session: it lists the sessions, which name the run's own
+ * session and its running execution, and then interrupts that execution. The run's turn is
+ * cancelled with no signal behind it.
+ */
+const interruptsItsOwnSession = (request, index) => {
+  if (index === 0) return callTool("ListSessions", {});
+  if (index === 1) {
+    const listing = request.body.messages.find((message) => message.role === "tool");
+    const [own] = JSON.parse(listing.content).sessions;
+    return callTool("InterruptSession", {
+      sessionId: own.session.sessionId,
+      expectedExecutionId: own.executionId,
+    });
+  }
+  return say("The turn went on after it was interrupted.");
+};
+
+test("a run whose turn is cancelled with no signal behind it says it was cancelled", async (t) => {
+  const { provider, home } = await ownerWithProvider(t, interruptsItsOwnSession);
+
+  const outcome = await start(t, home).outcome;
+
+  assert.equal(provider.modelRequests().length, 2, "the turn ended at the interrupt");
+  assert.equal(outcome.exitCode, CANCELLED_STATUS);
+  assert.equal(outcome.result.outcome, "cancelled");
+  assert.equal(outcome.result.error, undefined);
+  assertResultIsLast(outcome);
+});
+
+test("text output says a run whose turn was cancelled with no signal was cancelled", async (t) => {
+  const { home } = await ownerWithProvider(t, interruptsItsOwnSession);
+
+  const outcome = await start(t, home, "Do the work.", { outputFormat: "text" }).outcome;
+
+  assert.equal(outcome.exitCode, CANCELLED_STATUS);
+  assert.match(outcome.stderr, /^Cancelled$/m);
 });
 
 test("a run stopped while its turn runs a command closes every command it started before it exits", async (t) => {
