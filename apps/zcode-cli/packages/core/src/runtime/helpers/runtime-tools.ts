@@ -88,6 +88,8 @@ function registerRuntimeBuiltInTools(runtime: AgentRuntimeInternal, deps: AgentR
     includeNodeRepl: nodeReplEnabled,
     includeBrowserUse: browserUseEnabled,
     embeddedSearchEnabled: resolveRuntimeEmbeddedSearchEnabled(runtime),
+    // fork(searxng-search): uses the owner endpoint when registering search tools
+    searxngUrl: runtime.config.searxngUrl,
     allowedTools: resolveBuiltInToolAllowlist(runtime.config),
     // workflow_child 的结构性禁用（CreateWorkflow/SaveWorkflow 因 alwaysAsk 隐形挂起；
     // ResumeWorkflowRun 已免确认但因「child 内不得再编排」仍在列）在 helper

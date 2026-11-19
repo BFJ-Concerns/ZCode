@@ -35,7 +35,8 @@ import { createJsToolEntry, jsToolEntry } from "./node-repl.js";
 import { globToolEntry } from "./glob.js";
 import { grepToolEntry } from "./grep.js";
 import { webFetchToolEntry } from "./webfetch.js";
-import { webSearchToolEntry } from "./websearch.js";
+// fork(searxng-search): supplies client search tools from the owner endpoint
+import { withSearxngSearchTools } from "../../fork/searxng-search/index.js";
 import {
   agentToolEntry,
   createAgentToolEntry,
@@ -98,7 +99,7 @@ export const builtInTools: ToolEntry[] = [
   globToolEntry,
   grepToolEntry,
   webFetchToolEntry,
-  webSearchToolEntry,
+  // fork(searxng-search): replaces provider-native WebSearch at registration
   todoReadToolEntry,
   todoWriteToolEntry,
   cronCreateToolEntry,
@@ -224,6 +225,8 @@ interface RegisterBuiltInToolsOptions {
   /** browser-use 说明和 agent.browsers 注入由官方 browser-use 插件 + 宿主 browser bridge 共同启用。 */
   includeBrowserUse?: boolean;
   embeddedSearchEnabled?: boolean;
+  // fork(searxng-search): enables both search tools for this endpoint
+  searxngUrl?: string;
   allowedTools?: readonly string[];
   disallowedTools?: readonly string[];
   silentDuplicateWarnings?: boolean;
@@ -246,7 +249,8 @@ export function registerBuiltInTools(
         ]),
       )
     : undefined;
-  for (const builtIn of builtInTools) {
+  // fork(searxng-search): adds configured search tools before normal tool filtering
+  for (const builtIn of withSearxngSearchTools(builtInTools, options.searxngUrl)) {
     // 会话工具同名两种实现：独立 CLI 只有共有 8 个，App 另有 4 个；缺席即不注册。
     let entry = builtIn;
     if (SESSION_CONTROL_TOOL_NAMES.has(builtIn.metadata.name)) {

@@ -13,6 +13,7 @@ const LOOPBACK = "127.0.0.1";
 /**
  * @typedef {object} RecordedQuery
  * @property {string} q                        The search terms.
+ * @property {string} [traceId]              The trace header, when supplied.
  * @property {Record<string, string>} params   Every parameter of the request, `q` and `categories` included.
  *
  * @typedef {object} Searxng
@@ -47,7 +48,12 @@ export async function startSearxng({ results = () => [] } = {}) {
       response.end(`stand-in SearXNG has no ${url.pathname}`);
       return;
     }
-    const query = { q: params.q ?? "", params };
+    const traceId = request.headers["x-zcode-trace-id"];
+    const query = {
+      q: params.q ?? "",
+      params,
+      ...(typeof traceId === "string" ? { traceId } : {}),
+    };
     queries.push(query);
     const found = results(query);
     response.writeHead(200, { "content-type": "application/json" });

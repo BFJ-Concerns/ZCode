@@ -148,7 +148,7 @@ export function getTools(this: AgentRuntimeInternal, model?: Model): ModelToolCo
         !model ||
         resolveToolSearchMode(model, this.config.toolSearch?.mode) !== "off",
     )
-    .filter((tool) => tool.name !== "WebSearch" || shouldExposeWebSearch.call(this, model))
+    // fork(searxng-search): search availability comes from tool registration
     .map((tool) =>
       projectToolModelContract(tool, this.registry.get(tool.name), {
         model,
@@ -290,10 +290,4 @@ function filterRuntimeVisibleTools(
   return orderProviderVisibleToolContracts(visibleTools);
 }
 
-function shouldExposeWebSearch(this: AgentRuntimeInternal, model?: Model): boolean {
-  // 无 Model 的调用只枚举完整注册表，供持久化和 UI 元数据使用；真实执行始终传入
-  // 当前 Active Model，并只读取其冻结的完整能力事实。
-  if (!model) return true;
-  return model.properties.supportsNativeWebSearch;
-}
 import { resolveExecutionState } from "@zcode/shared";
