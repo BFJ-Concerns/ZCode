@@ -263,7 +263,12 @@ the one the release broke.
   gates' output is in the log the account names. Files the gates left in the worktree
   are named in the account and cleared away.
 
-Either way the process prints an account of the release for the owner: what it did to
+The process exits 0 when it moved `fork`, 1 when the replay stopped at a difference,
+2 when it refused to start or resume, and 3 when the proven result waits on its branch
+for the owner. Both a checked-out and an unchecked branch must still point to the
+commit the replay started from when Git locks the reference for the move.
+
+The process prints an account of the release for the owner: what it did to
 each difference, including which of its changes the release already makes, what was
 proven at each step, what it changed in the packages the command line builds from, and
 which changed packages hold none of the fork's code or joins. `--account <file>` also writes the account to a file.

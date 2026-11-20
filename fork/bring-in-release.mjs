@@ -42,14 +42,22 @@
  * there (resolve and `git cherry-pick --continue`, or amend), then run the same command
  * again: it gates what was reworked and carries on from the next difference.
  *
- * Exits 0 when the release is brought in, 1 when the replay stops at a difference, and
- * 2 when it cannot start.
+ * Exits 0 when the fork moves, 1 when the replay stops at a difference, 2 when it
+ * refuses to start or resume, and 3 when the proven result waits on its branch.
  */
 
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import {
+  cleanUpReplay,
+  forkCheckout,
+  git,
+  moveReleaseRef,
+  refIsSet,
+  refTip,
+  run,
+} from "./bring-in-release-git.mjs";
 
 const DEFAULT_GATES = ["node fork/check.mjs", "node fork/rungs.mjs"];
 const NAME_IN_PATH = [/(?:^|\/)src\/fork\/([a-z0-9-]+)\//, /^fork\/rungs\/([a-z0-9-]+)\//];
@@ -59,17 +67,6 @@ const GROUND = "base";
 const LISTED_AT_MOST = 8;
 
 class Stop extends Error {}
-
-const run = (command, args, options = {}) =>
-  spawnSync(command, args, { encoding: "utf8", maxBuffer: 1 << 28, ...options });
-
-function git(args, { cwd = process.cwd(), allowFailure = false } = {}) {
-  const result = run("git", args, { cwd });
-  if (result.status !== 0 && !allowFailure) {
-    throw new Error(`git ${args.join(" ")} failed:\n${result.stderr.trim()}`);
-  }
-  return allowFailure ? result : result.stdout.trimEnd();
-}
 
 const lines = (text) => text.split("\n").filter(Boolean);
 const short = (sha) => sha.slice(0, 8);
@@ -596,13 +593,7 @@ const uncommitted = (worktree) =>
   lines(git(["status", "--porcelain", "--untracked-files=all"], { cwd: worktree })).map((line) =>
     line.slice(3),
   );
-/** Whether `ref`, a pseudo-ref such as CHERRY_PICK_HEAD, is set in a checkout. */
-const refIsSet = (checkout, ref) =>
-  git(["rev-parse", "--verify", "--quiet", ref], { cwd: checkout, allowFailure: true }).status ===
-  0;
 const cherryPickInProgress = (worktree) => refIsSet(worktree, "CHERRY_PICK_HEAD");
-/** The operations under way in a checkout that moving its branch would end. */
-const OPERATIONS = { MERGE_HEAD: "merge", CHERRY_PICK_HEAD: "cherry-pick", REVERT_HEAD: "revert" };
 
 function parseCommandLine() {
   const { values, positionals } = parseArgs({
@@ -798,6 +789,7 @@ function resume(state) {
     gates: state.gates,
     keepSeparateRepairs: state.keepSeparateRepairs,
     outcome: "running",
+    checkout: undefined,
     stopReason: undefined,
     notMovedBecause: undefined,
   });
@@ -881,7 +873,7 @@ function replay(state) {
  * is checked out, its checkout moves with it, keeping changes no commit holds where the
  * release leaves their files alone; where it cannot, the fork waits for the owner.
  */
-function moveFork(state) {
+async function moveFork(state) {
   const forkRef = `refs/heads/${state.fork.branch}`;
   const finishCommand = rerunCommand();
   // The fork moves only when it is one commit for each difference, unless the owner says.
@@ -901,49 +893,42 @@ function moveFork(state) {
       "it moved while the release was being brought in, so it holds commits this replay " +
       `lacks. Start again from the fork as it now is: ${code(startAgainCommand(state.worktree, state.intakeBranch))}`;
   };
-  if (git(["rev-parse", forkRef]) !== state.fork.tip) return movedMeanwhile();
-  const checkedOut = git(["worktree", "list", "--porcelain"])
-    .split("\n\n")
-    .find((entry) => entry.split("\n").includes(`branch ${forkRef}`));
-  if (checkedOut) {
-    const checkout = checkedOut.split("\n")[0].replace(/^worktree /, "");
-    state.checkout = checkout;
-    const operation = Object.entries(OPERATIONS).find(([ref]) => refIsSet(checkout, ref))?.[1];
-    if (operation) {
-      state.outcome = "ready";
-      state.notMovedBecause =
-        `it is checked out in ${code(checkout)}, where a ${operation} is under way. ` +
-        `Finish it or abort it, then run ${code(finishCommand)} again to move ${code(state.fork.branch)}.`;
-      return;
-    }
-    const moved = git(["reset", "--quiet", "--keep", state.head], {
-      cwd: checkout,
-      allowFailure: true,
-    });
-    if (moved.status !== 0) {
-      const moving = new Set(lines(git(["diff", "--name-only", state.fork.tip, state.head])));
-      const overwritten = uncommitted(checkout).filter((path) => moving.has(path));
-      state.outcome = "ready";
-      state.notMovedBecause =
-        `it is checked out in ${code(checkout)}, where moving it would overwrite changes no ` +
-        `commit holds to ${overwritten.length > 0 ? listed(overwritten.map(code)) : "its files"}. Put them aside with ` +
-        `${code(`git -C ${shellWord(checkout)} stash --include-untracked`)}, then run ` +
-        `${code(finishCommand)} again to move it.`;
-      return;
-    }
-  } else {
-    const reason = `bring in upstream ${state.release.label}`;
-    const update = ["update-ref", "-m", reason, forkRef, state.head, state.fork.tip];
-    const moved = git(update, { allowFailure: true });
-    if (moved.status !== 0) return movedMeanwhile();
+  const tipChanged = () => refTip(forkRef) !== state.fork.tip;
+  if (tipChanged()) return movedMeanwhile();
+  const reason = `bring in upstream ${state.release.label}`;
+  const moveBlocked = (diagnostic) => {
+    state.outcome = "ready";
+    state.notMovedBecause = `Git could not complete the move. Review the Git error, then run ${code(finishCommand)} again.`;
+    process.stderr.write(`${diagnostic}\n`);
+  };
+  const checkout = forkCheckout(forkRef);
+  if (checkout?.operation) {
+    state.outcome = "ready";
+    state.notMovedBecause =
+      `it is checked out in ${code(checkout.path)}, where a ${checkout.operation} is under way. ` +
+      `Finish it or abort it, then run ${code(finishCommand)} again to move ${code(state.fork.branch)}.`;
+    return;
   }
+  const moved = await moveReleaseRef(forkRef, state.fork.tip, state.head, reason, checkout?.path);
+  if (moved.kind === "ref" && tipChanged()) return movedMeanwhile();
+  if (moved.kind === "checkout") {
+    const moving = new Set(lines(git(["diff", "--name-only", state.fork.tip, state.head])));
+    const overwritten = uncommitted(checkout.path).filter((path) => moving.has(path));
+    state.outcome = "ready";
+    state.notMovedBecause =
+      `it is checked out in ${code(checkout.path)}, where moving it would overwrite changes no ` +
+      `commit holds to ${overwritten.length > 0 ? listed(overwritten.map(code)) : "its files"}. Put them aside with ` +
+      `${code(`git -C ${shellWord(checkout.path)} stash --include-untracked`)}, then run ` +
+      `${code(finishCommand)} again to move it.`;
+    process.stderr.write(`${moved.diagnostic}\n`);
+    return;
+  }
+  if (moved.kind !== "moved") return moveBlocked(moved.diagnostic);
+  state.checkout = checkout?.path;
   state.outcome = "moved";
-  git(["worktree", "remove", "--force", state.worktree]);
-  git(["branch", "--quiet", "-D", state.intakeBranch]);
-  git(["update-ref", "-d", `refs/bring-in/${state.intakeBranch}`]);
 }
 
-function main() {
+async function main() {
   let options;
   let state;
   try {
@@ -960,12 +945,26 @@ function main() {
     if (!(error instanceof Stop)) throw error;
     stopAt(state, error.message);
   }
-  if (state.outcome === "running") moveFork(state);
+  if (state.outcome === "running") await moveFork(state);
+  if (state.outcome === "moved") {
+    try {
+      cleanUpReplay(state);
+    } catch (error) {
+      process.stderr.write(`The fork moved, but cleaning up the replay failed: ${error.message}\n`);
+    }
+  }
   if (state.outcome !== "moved" && existsSync(state.worktree)) save(state);
   const text = account(state);
   process.stdout.write(text);
-  if (options.account) writeFileSync(options.account, text);
-  return state.outcome === "stopped" ? 1 : 0;
+  if (options.account) {
+    try {
+      writeFileSync(options.account, text);
+    } catch (error) {
+      process.stderr.write(`Could not write the account to ${options.account}: ${error.message}\n`);
+    }
+  }
+  if (state.outcome === "moved") return 0;
+  return state.outcome === "ready" ? 3 : 1;
 }
 
-process.exitCode = main();
+process.exitCode = await main();

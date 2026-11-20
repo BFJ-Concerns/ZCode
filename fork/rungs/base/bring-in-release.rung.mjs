@@ -8,10 +8,18 @@
  */
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -124,12 +132,16 @@ function forkOfThree(repository) {
 
 /** Runs the process from `cwd`, as the owner does from a checkout. */
 function bringIn(cwd, ...args) {
+  return bringInWithEnvironment(cwd, ENVIRONMENT, ...args);
+}
+
+function bringInWithEnvironment(cwd, env, ...args) {
   const result = spawnSync(
     process.execPath,
     [BRING_IN_RELEASE, "v2.0.0", "--gate", GATE, ...args],
     {
       cwd,
-      env: ENVIRONMENT,
+      env,
       encoding: "utf8",
     },
   );
@@ -315,7 +327,12 @@ test("run from a checkout of the fork, the fork and its checkout move, keeping w
   });
   const checkout = join(root, "fork-checkout");
   git(repository, "worktree", "add", "--quiet", checkout, "fork");
-  write(checkout, { "notes.txt": "the owner's notes", "app/src/c.ts": numbered("c edited") });
+  write(checkout, {
+    "notes.txt": "the owner's notes",
+    "app/src/c.ts": numbered("c edited"),
+    "fork/README.md": "staged notes on the fork\n",
+  });
+  git(checkout, "add", "fork/README.md");
 
   const { exitCode, account, stderr } = bringIn(checkout);
 
@@ -327,11 +344,26 @@ test("run from a checkout of the fork, the fork and its checkout move, keeping w
   assert.equal(readFileSync(join(checkout, "app/src/b.ts"), "utf8"), "new upstream file\n");
   assert.equal(readFileSync(join(checkout, "notes.txt"), "utf8"), "the owner's notes");
   assert.match(readFileSync(join(checkout, "app/src/c.ts"), "utf8"), /^c edited 1$/m);
+  assert.equal(git(checkout, "diff", "--cached", "--name-only"), "fork/README.md");
+  assert.equal(git(checkout, "show", ":fork/README.md"), "staged notes on the fork");
   assert.match(
     account,
     /`fork` moved from upstream v1\.0\.0 to v2\.0\.0, and its checkout in `[^`]*fork-checkout` with it/,
   );
   assert.equal(git(repository, "branch", "--list", "bring-in-*"), "");
+});
+
+test("an account file that cannot be written leaves the successful move status intact", (t) => {
+  const { repository, forkTip } = forkAndRelease(t, (repository) => {
+    commit(repository, "chore: sync source v2.0.0", { "app/src/b.ts": ["new upstream file"] });
+  });
+
+  const moved = bringIn(repository, "--account", repository);
+
+  assert.equal(moved.exitCode, 0, `${moved.account}${moved.stderr}`);
+  assert.notEqual(git(repository, "rev-parse", "fork"), forkTip);
+  assert.match(moved.account, /`fork` moved from upstream v1\.0\.0 to v2\.0\.0/);
+  assert.match(moved.stderr, /Could not write the account/);
 });
 
 test("a checkout whose changes the move would overwrite waits, and the account's commands finish it", (t) => {
@@ -347,7 +379,7 @@ test("a checkout whose changes the move would overwrite waits, and the account's
 
   const waiting = bringIn(checkout);
 
-  assert.equal(waiting.exitCode, 0, `${waiting.account}${waiting.stderr}`);
+  assert.equal(waiting.exitCode, 3, `${waiting.account}${waiting.stderr}`);
   assert.equal(git(repository, "rev-parse", "fork"), forkTip);
   assert.equal(readFileSync(join(checkout, "app/src/c.ts"), "utf8"), edited);
   assert.match(waiting.account, /^# Upstream v2\.0\.0 brought in, waiting to move the fork$/m);
@@ -387,7 +419,7 @@ test("a fork that moves while the release is brought in is kept, and the account
 
   const waiting = bringIn(repository, "--gate", landsMeanwhile);
 
-  assert.equal(waiting.exitCode, 0, `${waiting.account}${waiting.stderr}`);
+  assert.equal(waiting.exitCode, 3, `${waiting.account}${waiting.stderr}`);
   assert.equal(git(repository, "rev-parse", "fork"), landed, "the landing is not overwritten");
   assert.match(waiting.account, /^# Upstream v2\.0\.0 brought in, waiting to move the fork$/m);
   assert.match(
@@ -410,6 +442,42 @@ test("a fork that moves while the release is brought in is kept, and the account
     "// repaired meanwhile",
   );
   assert.match(again.account, /\*\*beta\*\* \(1 repair folded in\)/);
+});
+
+test("a checked-out fork that moves after the tip check is kept with its checkout", (t) => {
+  const { root, repository, forkTip } = forkAndRelease(t, (repository) => {
+    commit(repository, "chore: sync source v2.0.0", { "app/src/b.ts": ["new upstream file"] });
+  });
+  const checkout = join(root, "fork-checkout");
+  git(repository, "worktree", "add", "--quiet", checkout, "fork");
+
+  // Land between the early tip check and the move, as Git returns the worktree list.
+  const bin = join(root, "bin");
+  write(bin, {
+    git: `#!/bin/sh
+if [ "$*" = 'worktree list --porcelain' ]; then
+  "$RELEASE_RUNG_GIT" -C "$RELEASE_RUNG_CHECKOUT" -c core.hooksPath=/dev/null \
+    commit --allow-empty --quiet -m 'landed after tip check' || exit
+fi
+exec "$RELEASE_RUNG_GIT" "$@"
+`,
+  });
+  chmodSync(join(bin, "git"), 0o755);
+  const waiting = bringInWithEnvironment(checkout, {
+    ...ENVIRONMENT,
+    PATH: bin + delimiter + ENVIRONMENT.PATH,
+    RELEASE_RUNG_CHECKOUT: checkout,
+    RELEASE_RUNG_GIT: execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(),
+  });
+
+  assert.equal(git(checkout, "log", "-1", "--format=%s", "HEAD"), "landed after tip check");
+  assert.equal(waiting.exitCode, 3, `${waiting.account}${waiting.stderr}`);
+  assert.equal(git(checkout, "rev-parse", "fork^"), forkTip);
+  assert.equal(git(checkout, "symbolic-ref", "HEAD"), "refs/heads/fork");
+  assert.equal(git(checkout, "status", "--porcelain"), "");
+  assert.equal(existsSync(join(checkout, "app/src/b.ts")), false);
+  assert.match(waiting.account, /it moved while the release was being brought in/);
+  assert.match(waiting.account, /Start again from the fork as it now is/);
 });
 
 test("files the gates leave behind are cleared away, so the step can be gated again once reworked", (t) => {
@@ -543,7 +611,7 @@ test("repairs made on a later difference, the ground's among them, are replayed 
 
   // Not one commit for each difference, the fork waits for the owner's word to move.
   const held = bringIn(repository);
-  assert.equal(held.exitCode, 0, `${held.account}${held.stderr}`);
+  assert.equal(held.exitCode, 3, `${held.account}${held.stderr}`);
   assert.equal(git(repository, "rev-parse", "fork"), forkTip);
   assert.match(held.account, /^# Upstream v2\.0\.0 brought in, waiting to move the fork$/m);
   assert.match(
@@ -608,7 +676,7 @@ test("a repair made on another repair still waiting is placed once that one is",
 
   // Not one commit for each difference, the fork waits for the owner's word to move.
   const held = bringIn(repository);
-  assert.equal(held.exitCode, 0, `${held.account}${held.stderr}`);
+  assert.equal(held.exitCode, 3, `${held.account}${held.stderr}`);
   assert.equal(git(repository, "rev-parse", "fork"), forkTip);
   assert.match(held.account, /^# Upstream v2\.0\.0 brought in, waiting to move the fork$/m);
   assert.match(
