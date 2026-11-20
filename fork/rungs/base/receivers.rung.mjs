@@ -244,3 +244,32 @@ test("a non-loopback IPv6 address is refused even when a server listens on every
   await refusedAt(port, "2001:db8::8");
   assert.deepEqual(destinations((await attempts()).connections), [`tcp 2001:db8::8:${port}`]);
 });
+
+for (const [type, wildcard, address] of [
+  ["udp4", "0.0.0.0", "203.0.113.10"],
+  ["udp6", "::", "2001:db8::10"],
+]) {
+  test(`a ${type} datagram to a non-loopback address is refused even when a socket listens on every interface`, async (t) => {
+    const listener = createSocket(type);
+    await new Promise((resolve, reject) => {
+      listener.once("error", reject);
+      listener.bind(0, wildcard, resolve);
+    });
+    t.after(() => listener.close());
+    const { port } = listener.address();
+
+    // A refused datagram comes back to a connected socket as ECONNREFUSED; one that gets
+    // through reaches the listener instead, and the rung fails on it.
+    const sender = createSocket(type);
+    t.after(() => sender.close());
+    await assert.rejects(
+      new Promise((resolve, reject) => {
+        listener.once("message", () => resolve("the listener received the datagram"));
+        sender.once("error", reject);
+        sender.connect(port, address, () => sender.send("attempt"));
+      }),
+      { code: "ECONNREFUSED" },
+    );
+    assert.deepEqual(destinations((await attempts()).connections), [`udp ${address}:${port}`]);
+  });
+}
