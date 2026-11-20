@@ -1,5 +1,8 @@
 import { formatJson } from "@zcode/core";
-import { readHeadlessRuntimeFacts, waitForHeadlessWorkflowSettle } from "../../headless-workflow.js";
+import {
+  readHeadlessRuntimeFacts,
+  waitForHeadlessWorkflowSettle,
+} from "../../headless-workflow.js";
 import {
   SessionEventType,
   type SessionEvent,
