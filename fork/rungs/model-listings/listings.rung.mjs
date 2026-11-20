@@ -56,9 +56,9 @@ async function ownerWithListing(
   return { provider, home };
 }
 
-/** Runs `zcode models` in `home` and returns what it printed. */
-async function printedModels(t, home) {
-  const run = launch({ home, command: ["models"] });
+/** Runs `zcode models` in `home` with any trailing options and returns what it printed. */
+async function printedModels(t, home, options = []) {
+  const run = launch({ home, command: ["models", ...options] });
   t.after(() => run.dispose());
   const outcome = await run.outcome;
   assert.equal(outcome.exitCode, 0, outcome.stderr);
@@ -220,7 +220,7 @@ test("a value the owner writes for a model replaces the listing's, and the listi
     ],
   });
 
-  const listed = limitsOf(await printedModels(t, home), "gateway-coder");
+  const listed = limitsOf(await printedModels(t, home, ["--cwd", home.workspace]), "gateway-coder");
 
   assert.equal(listed.contextWindow, 50_000, "the owner's value");
   assert.equal(listed.maxOutputTokens, 64_000, "the listing's value");
