@@ -261,8 +261,7 @@ node fork/bring-in-release.mjs v3.19.0        # a tag, or the release's commit o
 The process makes a worktree at `<repository>-Worktrees/bring-in-<release>` beside the
 repository, on a branch of the same name cut from the release. It replays the fork's
 differences there one at a time, in the fork's order, and runs both gates after each
-one. The first difference that conflicts with the release or fails a gate is therefore
-the one the release broke.
+one. The replay stops at the first difference that Git cannot pick or that fails a gate.
 
 - **Every difference replayed and proven:** `fork` moves to the result, and the worktree
   and its branch are removed. Where `fork` is checked out, its checkout moves with it,
@@ -273,11 +272,11 @@ the one the release broke.
   without gating again. If `fork` moved while the release was being brought in, it is
   left as it is, because the replay lacks its new commits, and the account gives the
   command that starts again from it.
-- **A difference broken:** the process stops there. `fork` stays where it was, and the
-  worktree holds the replay as far as it got. A conflicting difference is left mid
-  cherry-pick; a difference that failed a gate is the branch's last commit, and the
-  gates' output is in the log the account names. Files the gates left in the worktree
-  are named in the account and cleared away.
+- **A step stopped:** `fork` stays where it was, and the worktree holds the replay as
+  far as it got. A conflicting difference is left mid cherry-pick. If Git stops for
+  another reason, such as a signing failure, the account names the step and includes
+  Git's diagnostic. A difference that failed a gate is the branch's last commit.
+  The account names the gate log and any files the gates left behind and cleared away.
 
 The process exits 0 when it moved `fork`, 1 when the replay stopped at a difference,
 2 when it refused to start or resume, and 3 when the proven result waits on its branch
@@ -307,13 +306,23 @@ attributed to either, so the process stops before replaying anything and names t
 commit. Only markers in files upstream ships count: text in `fork/` or a `src/fork/`
 directory is never read as a join.
 
-To rework a broken difference, fix it in the worktree: resolve the conflict and
-`git cherry-pick --continue`, or amend the commit. Then run the same command again. Only
-committed rework counts: the process refuses to go on while the worktree holds changes
-no commit holds. It gates the reworked step and carries on with the next difference. Rework may change how
-a difference is done but not what it promises, and it may not weaken its rungs; a change
-to either goes to the owner. When upstream comes to provide what a difference added, the
-difference keeps its rungs and loses its code.
+Fix the problem in the replay worktree. For a conflict, resolve and stage the files
+before running `git cherry-pick --continue`. For another Git failure, fix the cause
+and run `git cherry-pick --continue` if a pick is in progress. If a gate failed,
+amend the step's commit. Then run the original release command again.
+
+```text
+Git cannot pick a step → release tool records the stopped step and writes the account
+  pick in progress → finish the pick in the worktree → rerun → gate its commit
+  no pick and no new commit → rerun → retry the same pick → gate its commit
+  after the gate passes → replay the next step
+```
+
+The replay accepts one commit per reached step and requires a clean worktree before
+it resumes. Rework may change how a difference is done while preserving what it
+promises and what its rungs verify. A change to either goes to the owner. When
+upstream provides what a difference added, the difference keeps its rungs and loses
+its code.
 
 The process never pushes. Moving `fork` rewrites its history, so it is published with a
 push that replaces `fork` on origin only if origin still holds the fork the release

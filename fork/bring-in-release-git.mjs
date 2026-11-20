@@ -13,6 +13,23 @@ export function git(args, { cwd = process.cwd(), allowFailure = false } = {}) {
   return allowFailure ? result : result.stdout.trimEnd();
 }
 
+export function cherryPick(cwd, commit) {
+  // --keep-redundant-commits is --empty=keep under the name Git before 2.45 knows.
+  const result = git(["cherry-pick", "--allow-empty", "--keep-redundant-commits", commit], {
+    cwd,
+    allowFailure: true,
+  });
+  if (result.status === 0) return { ok: true };
+  const unmerged = git(["diff", "--name-only", "--diff-filter=U"], { cwd, allowFailure: true });
+  const conflicts = unmerged.status === 0 ? unmerged.stdout.split("\n").filter(Boolean) : [];
+  const diagnostic =
+    result.stderr?.trim() ||
+    result.stdout?.trim() ||
+    result.error?.message ||
+    `git cherry-pick ended with ${result.signal ?? `exit status ${result.status}`}.`;
+  return { ok: false, conflicts, diagnostic };
+}
+
 export const refTip = (ref) =>
   git(["rev-parse", "--verify", "--quiet", ref], { allowFailure: true }).stdout.trim();
 

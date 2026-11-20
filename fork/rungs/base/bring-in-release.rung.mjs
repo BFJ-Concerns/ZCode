@@ -258,6 +258,72 @@ test("a release a difference conflicts with stops there and leaves the fork wher
   );
 });
 
+test("a signing failure stops at the pick and resumes with the commit made by hand", (t) => {
+  const { root, repository, forkTip } = forkAndRelease(t, (repository) => {
+    commit(repository, "chore: sync source v2.0.0", { "upstream.txt": ["new release"] });
+  });
+  // Turn on signing after base is gated, so the failure is in the replay of alpha.
+  const signingGate =
+    "test -f app/src/fork/alpha/index.ts || " +
+    "(git config gpg.program false && git config commit.gpgsign true)";
+  const accountFile = join(root, "account.md");
+  const args = ["--gate", signingGate, "--account", accountFile];
+  const stopped = bringIn(repository, ...args);
+
+  assert.equal(stopped.exitCode, 1, `${stopped.account}${stopped.stderr}`);
+  assert.equal(git(repository, "rev-parse", "fork"), forkTip);
+  assert.match(stopped.account, /Stopped at \*\*alpha\*\*.*Git could not replay/);
+  assert.match(stopped.account, /failed to sign the data/);
+  assert.match(stopped.account, /git cherry-pick --continue/);
+  assert.match(stopped.account, /\*\*beta\*\*: not reached/);
+  assert.doesNotMatch(stopped.stderr, /at cherryPick|Error: git cherry-pick/);
+  assert.equal(readFileSync(accountFile, "utf8"), stopped.account);
+
+  const worktree = join(root, "repository-Worktrees", "bring-in-v2.0.0");
+  assert.equal(git(worktree, "log", "-1", "--format=%s"), "fork: gate the fork");
+  assert.equal(git(worktree, "diff", "--name-only", "--diff-filter=U"), "");
+  git(worktree, "config", "commit.gpgsign", "false");
+  git(worktree, "cherry-pick", "--continue");
+  const finished = git(worktree, "rev-parse", "HEAD");
+
+  const resumed = bringIn(repository, ...args);
+  assert.equal(resumed.exitCode, 0, `${resumed.account}${resumed.stderr}`);
+  assert.doesNotMatch(resumed.stderr, /^base$/m, "base keeps its gate result");
+  assert.match(resumed.stderr, /^alpha$/m, "the manually completed pick is gated");
+  assert.equal(git(repository, "rev-parse", "fork~1"), finished);
+  assert.deepEqual(subjects(repository, "v2.0.0..fork"), [
+    "beta: change line five",
+    "alpha: call alpha",
+    "fork: gate the fork",
+  ]);
+});
+
+test("a pick blocked before it starts is retried at the same step", (t) => {
+  const { root, repository, forkTip } = forkAndRelease(t, (repository) => {
+    commit(repository, "chore: sync source v2.0.0", { "upstream.txt": ["new release"] });
+  });
+  const lockGate =
+    'test -f app/src/fork/alpha/index.ts || touch "$(git rev-parse --git-path index.lock)"';
+  const stopped = bringIn(repository, "--gate", lockGate);
+
+  assert.equal(stopped.exitCode, 1, `${stopped.account}${stopped.stderr}`);
+  assert.equal(git(repository, "rev-parse", "fork"), forkTip);
+  assert.match(stopped.account, /Stopped at \*\*alpha\*\*.*Git could not replay/);
+  assert.match(stopped.account, /index\.lock/);
+  assert.doesNotMatch(stopped.account, /git cherry-pick --continue/);
+
+  const worktree = join(root, "repository-Worktrees", "bring-in-v2.0.0");
+  rmSync(git(worktree, "rev-parse", "--path-format=absolute", "--git-path", "index.lock"));
+  const resumed = bringIn(repository, "--gate", lockGate);
+
+  assert.equal(resumed.exitCode, 0, `${resumed.account}${resumed.stderr}`);
+  assert.deepEqual(subjects(repository, "v2.0.0..fork"), [
+    "beta: change line five",
+    "alpha: call alpha",
+    "fork: gate the fork",
+  ]);
+});
+
 test("a release that fails the gates with a difference replayed stops at that difference", (t) => {
   const { repository, forkTip } = forkAndRelease(t, (repository) => {
     // The release passes alone and with base; the gate fails once alpha is replayed.
