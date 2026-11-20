@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
+import { isBuiltin } from "node:module";
 import { test } from "node:test";
 import { say, startModelProvider } from "../../harness/model-provider.mjs";
 import { createOwnerHome, providerConfiguration } from "../../harness/owner-home.mjs";
 import { openTerminalUi } from "../../harness/terminal-ui.mjs";
 
 test("the built terminal UI accepts a prompt without Node flags", async (t) => {
+  // The repair this proves runs only where Node provides `node:ffi`; elsewhere the UI
+  // starts without it, and passing there would prove nothing.
+  if (!isBuiltin("node:ffi")) {
+    t.skip(`Node ${process.version} has no node:ffi, so the repair cannot be exercised here.`);
+    return;
+  }
   const reply = "Terminal startup confirmed.";
   const provider = await startModelProvider({
     script: ({ body }) => {
