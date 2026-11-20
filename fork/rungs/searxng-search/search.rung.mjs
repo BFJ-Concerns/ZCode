@@ -166,7 +166,7 @@ test("case-sensitive destinations each appear once", async (t) => {
   );
 });
 
-test("a full page keeps complete links and a summary within the model's UTF-8 limit", async (t) => {
+test("a full page keeps complete links and uses the remaining budget for the summary", async (t) => {
   const webResults = Array.from({ length: 20 }, (_, index) => ({
     title: `Guide ${index + 1}`,
     url: `https://guide.example/articles/${index + 1}/${"a".repeat(200)}`,
@@ -182,14 +182,46 @@ test("a full page keeps complete links and a summary within the model's UTF-8 li
 
   const reply = toolMessages(provider.modelRequests()[1]);
   assert.ok(Buffer.byteLength(reply, "utf8") <= MODEL_OUTPUT_LIMIT);
-  assert.match(reply, /\nSummary:\nGuide 1: Snippet 1: 鳥/);
-  assert.match(reply, /\nLinks:\n/);
+  const summary = reply.match(/\nSummary:\n([\s\S]+?)\n\nLinks:\n/)?.[1];
+  assert.ok(summary?.startsWith("Guide 1: Snippet 1: 鳥"), "the reply starts with the top snippet");
+  const summaryBytes = Buffer.byteLength(summary, "utf8");
+  // The fixture supplies more snippets than can fit, even after keeping all twenty links.
+  assert.ok(
+    summaryBytes >= 4_000,
+    `expected at least 4,000 bytes of snippets after keeping every link, got ${summaryBytes}`,
+  );
   assert.doesNotMatch(reply, /truncated by resultBudget/);
   assert.deepEqual(
     markdownLinks(reply),
     webResults.map(({ url }) => url),
   );
   for (const { url } of webResults) assert.equal(reply.split(url).length, 2);
+});
+
+test("a query larger than the output budget reaches SearXNG whole and is shortened in the reply", async (t) => {
+  const prefix = "kingfisher habitats ";
+  const tail = "search terms at the end";
+  const query = `${prefix}${"reeds".repeat(MODEL_OUTPUT_LIMIT / 5)} ${tail}`;
+  const { home, provider, search } = await ownerWithSearch(t, {
+    configured: true,
+    nativeSearch: false,
+    script: [callTool("WebSearch", { query }), say("Done.")],
+    webResults: [WEB_RESULT],
+  });
+  await run(t, home, "Search the web.");
+
+  assert.deepEqual(
+    search.queries.map(({ q }) => q === query),
+    [true],
+    "SearXNG gets the whole query",
+  );
+  const reply = toolMessages(provider.modelRequests()[1]);
+  assert.ok(reply.startsWith(`Web search results for query: "${prefix}`));
+  assert.ok(!reply.includes(tail), "the reply omits the end of the query");
+  assert.ok(Buffer.byteLength(reply, "utf8") <= MODEL_OUTPUT_LIMIT);
+  assert.doesNotMatch(reply, /truncated by resultBudget/);
+  assert.ok(reply.includes(`\nSummary:\n${WEB_RESULT.title}: ${WEB_RESULT.content}\n`));
+  assert.deepEqual(markdownLinks(reply), [WEB_RESULT.url]);
 });
 
 test("long destinations use the available space in ranked order and stay whole", async (t) => {
