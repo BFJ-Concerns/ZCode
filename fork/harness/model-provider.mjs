@@ -8,6 +8,7 @@
  */
 
 import { createServer } from "node:http";
+import { noZcodeRunning } from "./zcode-processes.mjs";
 
 const LOOPBACK = "127.0.0.1";
 const SSE_HEADERS = {
@@ -53,7 +54,9 @@ export const hang = () => ({ kind: "hang" });
  * @property {RecordedRequest[]} requests        Every request, in arrival order.
  * @property {() => RecordedRequest[]} modelRequests   The chat-completion requests among them.
  * @property {(matches: (request: RecordedRequest) => boolean) => Promise<RecordedRequest>} request
- *   The first request `matches` accepts, past or future: how a rung waits for the fork to call.
+ *   The first request `matches` accepts, past or future: how a rung waits for the fork to
+ *   call. Rejects, with what the last `zcode` to end printed, once no `zcode` the
+ *   harness started is running and every request it sent has arrived.
  * @property {() => Promise<void>} close
  */
 
@@ -68,6 +71,11 @@ export const hang = () => ({ kind: "hang" });
  *   of the request for a rung whose replies depend on what the fork sent. A request
  *   that arrives after a list has run out is answered 500 and stays in `requests`,
  *   so an unexpected extra request fails the rung where it can be seen.
+ *
+ *   The terminal UI asks the model for a session title beside the first turn of a
+ *   session, and either request can arrive first. A rung that drives the UI therefore
+ *   scripts its replies with a function, answering the title request apart from the
+ *   turn (see `asksForSessionTitle`), and not with a list.
  * @returns {Promise<ModelProvider>}
  */
 export async function startModelProvider({ listing, script = [] } = {}) {
@@ -75,6 +83,13 @@ export async function startModelProvider({ listing, script = [] } = {}) {
   const requests = [];
   const waiters = new Set();
   let modelRequestCount = 0;
+  /** Connections still open, and what waits for them all to close. */
+  const connections = new Set();
+  const drainWaiters = new Set();
+  const drained = () =>
+    connections.size === 0
+      ? Promise.resolve()
+      : new Promise((resolve) => drainWaiters.add(resolve));
 
   const server = createServer(async (request, response) => {
     const recorded = {
@@ -104,6 +119,15 @@ export async function startModelProvider({ listing, script = [] } = {}) {
     }
     return sendJson(response, 404, errorBody(`stand-in provider has no ${pathname}`));
   });
+  server.on("connection", (socket) => {
+    connections.add(socket);
+    socket.once("close", () => {
+      connections.delete(socket);
+      if (connections.size > 0) return;
+      for (const resolve of drainWaiters) resolve();
+      drainWaiters.clear();
+    });
+  });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, LOOPBACK, resolve);
@@ -118,7 +142,24 @@ export async function startModelProvider({ listing, script = [] } = {}) {
     request: (matches) => {
       const seen = requests.find(matches);
       if (seen !== undefined) return Promise.resolve(seen);
-      return new Promise((resolve) => waiters.add({ matches, resolve }));
+      return new Promise((resolve, reject) => {
+        const waiter = { matches, resolve };
+        waiters.add(waiter);
+        // A request sent just before `zcode` ended is still read once its connection closes.
+        noZcodeRunning()
+          .then(async (account) => {
+            await drained();
+            return account;
+          })
+          .then((account) => {
+            if (!waiters.delete(waiter)) return;
+            reject(
+              new Error(
+                `zcode ended before the provider received the awaited request.\n${account}`,
+              ),
+            );
+          });
+      });
     },
     close: () =>
       new Promise((resolve) => {
@@ -131,6 +172,22 @@ export async function startModelProvider({ listing, script = [] } = {}) {
 
 /** Whether a recorded request asks the model for a reply, as opposed to the listing. */
 export const isModelRequest = (request) => request.path.endsWith("/chat/completions");
+
+/** The instruction upstream's terminal UI opens its session title request with. */
+const SESSION_TITLE_INSTRUCTION = "Generate a concise title for this coding session.";
+
+/**
+ * Whether a model request asks for the session's title rather than a turn. The title
+ * is read as JSON, so a rung answers it with `say('{"title":"..."}')`.
+ */
+export const asksForSessionTitle = (request) =>
+  isModelRequest(request) &&
+  (request.body?.messages ?? []).some(
+    ({ role, content }) =>
+      role === "system" &&
+      typeof content === "string" &&
+      content.startsWith(SESSION_TITLE_INSTRUCTION),
+  );
 
 async function readJsonBody(request) {
   const chunks = [];

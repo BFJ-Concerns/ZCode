@@ -10,6 +10,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { endZcodeIn } from "./zcode-processes.mjs";
 
 /** Environment variables a run inherits from the rung's own process. */
 const INHERITED_ENVIRONMENT = /^(PATH|LANG|LC_ALL|TERM|TMPDIR)$/;
@@ -72,6 +73,7 @@ export function providerConfiguration({
  * @property {string} workspace  An empty project directory inside it, for `--cwd`.
  * @property {Record<string, string>} env  The whole environment a run in this home gets.
  * @property {() => Promise<void>} remove
+ *   Ends every `zcode` run in the home and whatever it started, then deletes the home.
  */
 
 /**
@@ -96,9 +98,18 @@ export async function createOwnerHome({ providerConfig, cliConfig = {} }) {
     if (value !== undefined && INHERITED_ENVIRONMENT.test(name)) env[name] = value;
   }
 
-  // Retried: a terminal UI that was just ended can still be writing its last files here.
-  const remove = () => rm(dir, { recursive: true, force: true, maxRetries: 10 });
-  return { dir, workspace, env, remove };
+  /** @type {OwnerHome} */
+  const home = {
+    dir,
+    workspace,
+    env,
+    remove: async () => {
+      // Nothing may still be writing into the home while it is deleted.
+      await endZcodeIn(home);
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+  return home;
 }
 
 async function writeJson(path, value) {
