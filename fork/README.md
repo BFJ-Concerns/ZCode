@@ -141,6 +141,10 @@ node fork/rungs.mjs --no-build base    # against the build already in place
 A rung file is `fork/rungs/<difference>/<subject>.rung.mjs`: plain JavaScript using
 `node:test`, importing nothing but Node and `fork/harness/`. Fixtures that only one
 difference needs (a listing in some provider's shape, say) sit beside its rungs.
+`fork/rungs/base/bundled-plugins.rung.mjs` is the one exception: it also reads
+upstream's release recipe, `apps/zcode-cli/packages/cli/scripts/sea-official-plugin-assets.mjs`,
+for the files each bundled plugin must carry, so that a plugin a release adds is held
+to what upstream says of it.
 `fork/rungs/base/receivers.rung.mjs` is the one to copy, and
 `fork/rungs/base/terminal-ui.rung.mjs` the one for a rung that drives the terminal UI.
 
