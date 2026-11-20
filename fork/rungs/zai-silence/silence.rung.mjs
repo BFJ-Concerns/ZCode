@@ -8,7 +8,9 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -174,21 +176,19 @@ test("the plugin commands reach no host but the stand-ins", async (t) => {
   await assertNothingAttempted(home);
 });
 
-test("a document skill uses installed fonts and reports no download without a mirror", async (t) => {
-  const { provider, home } = await ownerWithProvider(t, [
-    callTool("Skill", { skill: "docx" }),
-    callTool("Bash", {
-      command: `env -u ZCODE_FONT_SOURCE_URL USE_CN_MIRROR_FORCE=true PATH="$PWD/setup-bin:$PATH" bash ${DOCX_SKILL}/env_setup/setup_mac_linux.sh`,
-      description: "Run the Word skill's setup with no font mirror",
-    }),
-    say("Setup finished."),
-  ]);
-  // These stand-ins make the existing dependencies available and model a machine with
-  // no CJK fonts. Record any download the font step tries to make.
+const SETUP_ENV = 'USE_CN_MIRROR_FORCE=true PATH="$PWD/setup-bin:$PATH"';
+
+async function standInSetupDependencies(home, extra = {}) {
   const bin = join(home.workspace, "setup-bin");
   await mkdir(bin);
-  for (const name of ["node", "npm", "python3", "fc-list", "curl"]) {
-    const body = name === "curl" ? 'printf "%s\\n" "$*" >> font-downloads; exit 1' : "exit 0";
+  for (const [name, body] of Object.entries({
+    node: "exit 0",
+    npm: "exit 0",
+    python3: "exit 0",
+    "fc-list": "exit 0",
+    "fc-cache": "exit 0",
+    ...extra,
+  })) {
     await writeFile(
       join(bin, name),
       `#!/bin/sh
@@ -197,6 +197,22 @@ ${body}
       { mode: 0o755 },
     );
   }
+}
+
+test("a document skill uses installed fonts and reports no download without a mirror", async (t) => {
+  const { provider, home } = await ownerWithProvider(t, [
+    callTool("Skill", { skill: "docx" }),
+    callTool("Bash", {
+      command: `env -u ZCODE_FONT_SOURCE_URL ${SETUP_ENV} bash ${DOCX_SKILL}/env_setup/setup_mac_linux.sh`,
+      description: "Run the Word skill's setup with no font mirror",
+    }),
+    say("Setup finished."),
+  ]);
+  // These stand-ins make the existing dependencies available and model a machine with
+  // no CJK fonts. Record any download the font step tries to make.
+  await standInSetupDependencies(home, {
+    curl: 'printf "%s\\n" "$*" >> font-downloads; exit 1',
+  });
 
   const run = launch({ home, prompt: "Set up the Word document skill." });
   t.after(() => run.dispose());
@@ -213,6 +229,56 @@ ${body}
   assert.match(result, /All dependencies OK/u);
   assert.doesNotMatch(result, /fonts were (?:just installed|downloaded)|Downloading .* fonts/u);
   await assert.rejects(readFile(join(home.workspace, "font-downloads")), { code: "ENOENT" });
+  await assertNothingAttempted(home);
+});
+
+test("a document skill downloads fonts from the mirror the owner names", async (t) => {
+  const font = "stand-in font bytes";
+  const requests = [];
+  const mirror = createServer((request, response) => {
+    requests.push(request.url);
+    response.end(font);
+  }).listen(0, "127.0.0.1");
+  t.after(
+    () =>
+      new Promise((resolve, reject) => {
+        mirror.close((error) => (error ? reject(error) : resolve()));
+      }),
+  );
+  await once(mirror, "listening");
+
+  const { provider, home } = await ownerWithProvider(t, [
+    callTool("Skill", { skill: "docx" }),
+    callTool("Bash", {
+      command: `${SETUP_ENV} bash ${DOCX_SKILL}/env_setup/setup_mac_linux.sh`,
+      description: "Run the Word skill's setup with the owner's font mirror",
+    }),
+    say("Setup finished."),
+  ]);
+  await standInSetupDependencies(home);
+  home.env.ZCODE_FONT_SOURCE_URL = `http://127.0.0.1:${mirror.address().port}/owner-fonts`;
+
+  const run = launch({ home, prompt: "Set up the Word document skill." });
+  t.after(() => run.dispose());
+  const { exitCode, stderr } = await run.outcome;
+  assert.equal(exitCode, 0, stderr);
+  assert.ok(
+    requests.some((path) =>
+      path.endsWith("/usr/share/fonts/truetype/chinese/NotoSansSC%5Bwght%5D.ttf"),
+    ),
+    "the mirror received the request for Noto Sans SC",
+  );
+  assert.ok(requests.every((path) => path.startsWith("/owner-fonts/")));
+  assert.equal(
+    await readFile(join(home.dir, ".local", "share", "fonts", "NotoSansSC[wght].ttf"), "utf8"),
+    font,
+  );
+  const result = provider
+    .modelRequests()
+    .at(-1)
+    .body.messages.filter((message) => message.role === "tool")
+    .at(-1)?.content;
+  assert.match(result, /All dependencies OK/u);
   await assertNothingAttempted(home);
 });
 

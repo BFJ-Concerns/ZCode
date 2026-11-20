@@ -21,6 +21,7 @@ import { enumeratePluginComponents, type PluginComponentGroup } from "./plugin-c
 import { applyNetworkEgressEnv } from "../network/subprocess-env.js";
 import { createNodeWebFetchHttpClientAdapter } from "../http/index.js";
 import { writeCdnOfficialMarketplacePartition } from "./official-marketplace.js";
+// fork(zai-silence): keep the bundled catalogue out of marketplace source refreshes
 import { isOfficialCatalogue, refreshableMarketplaces } from "../fork/zai-silence/index.js";
 import {
   isZipPluginUrlSource,

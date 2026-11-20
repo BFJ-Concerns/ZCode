@@ -7,13 +7,13 @@
  */
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ZCODE_ENTRY } from "../../harness/launcher.mjs";
+import { launch } from "../../harness/launcher.mjs";
 import { createOwnerHome, providerConfiguration } from "../../harness/owner-home.mjs";
+import { openTerminalUi } from "../../harness/terminal-ui.mjs";
 
 const SITES_PLUGIN = fileURLToPath(
   new URL("../../../apps/zcode-cli/packages/zcode-site-plugin", import.meta.url),
@@ -52,31 +52,41 @@ async function ownerWithSitesInstalled(t) {
   return home;
 }
 
-function zcodeCommand(home, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [ZCODE_ENTRY, ...args], {
-      cwd: home.workspace,
-      env: home.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.once("error", reject);
-    child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
-  });
-}
-
 test("an installed, enabled ZCode Sites is not loaded", async (t) => {
   const home = await ownerWithSitesInstalled(t);
 
-  const plugins = await zcodeCommand(home, ["plugins", "list"]);
-  assert.equal(plugins.exitCode, 0, plugins.stderr);
-  assert.match(plugins.stdout, /documents@zcode-plugins-official/u, "plugins are listed");
-  assert.doesNotMatch(plugins.stdout, /zcode-site/u, plugins.stdout);
+  const plugins = launch({ home, command: ["plugins", "list"] });
+  t.after(() => plugins.dispose());
+  const listed = await plugins.outcome;
+  assert.equal(listed.exitCode, 0, listed.stderr);
+  assert.match(listed.stdout, /documents@zcode-plugins-official/u, "plugins are listed");
+  assert.doesNotMatch(listed.stdout, /zcode-site/u, listed.stdout);
 
-  const skills = await zcodeCommand(home, ["skills", "list"]);
-  assert.equal(skills.exitCode, 0, skills.stderr);
-  assert.doesNotMatch(skills.stdout, /site-deploy/u, skills.stdout);
+  const skills = launch({ home, command: ["skills", "list"] });
+  t.after(() => skills.dispose());
+  const discovered = await skills.outcome;
+  assert.equal(discovered.exitCode, 0, discovered.stderr);
+  assert.doesNotMatch(discovered.stdout, /site-deploy/u, discovered.stdout);
+});
+
+test("a session gets none of the installed ZCode Sites commands", async (t) => {
+  const home = await ownerWithSitesInstalled(t);
+  const ownerCommands = join(home.workspace, ".zcode", "commands");
+  await mkdir(ownerCommands, { recursive: true });
+  await writeFile(join(ownerCommands, "zz-owner-command.md"), "An owner's command.\n");
+
+  const ui = openTerminalUi({ home });
+  t.after(() => ui.dispose());
+  await ui.submit("/help");
+  await ui.shows("Use /help <command> for details.");
+  const screen = ui.screen();
+  assert.match(screen, /\/zz-owner-command\b/u, "custom commands are listed");
+  const siteCommands = (await readdir(join(SITES_PLUGIN, "commands")))
+    .filter((file) => file.endsWith(".md"))
+    .map((file) => file.slice(0, -3));
+  assert.ok(siteCommands.length > 0, "the installed fixture carries commands");
+  for (const name of siteCommands) {
+    assert.ok(!screen.includes(`/${name}`), `the session lists /${name}`);
+  }
+  await ui.dispose();
 });

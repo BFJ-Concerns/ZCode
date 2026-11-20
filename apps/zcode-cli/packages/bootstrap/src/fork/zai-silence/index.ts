@@ -1,3 +1,7 @@
+import {
+  refreshableMarketplaces,
+  writeBundledOfficialMarketplacePartition,
+} from "@zcode/adapters/plugins";
 import type { SharedZCodeCredentialStore } from "@zcode/adapters/auth";
 import type { ProviderEndpointRoutingPort } from "@zcode/contracts";
 
@@ -63,4 +67,16 @@ export function withoutAccountOnlyModel<
   if (!profile.modelSelection?.providerId.startsWith(ACCOUNT_PROVIDER_PREFIX)) return profile;
   const { modelSelection: _accountOnly, ...inheritsSessionModel } = profile;
   return inheritsSessionModel as Profile;
+}
+
+/** Publish what this build carries, even if upstream left a downloaded catalogue in this home. */
+export function publishBundledCatalogue(
+  input: Parameters<typeof writeBundledOfficialMarketplacePartition>[0],
+): Promise<Record<string, unknown>> {
+  return writeBundledOfficialMarketplacePartition({ ...input, publishBundledOnly: true });
+}
+
+/** An unnamed refresh visits the owner's known marketplaces and skips the bundled catalogue. */
+export function bulkMarketplaceIds(known: readonly { readonly id: string }[]): string[] {
+  return refreshableMarketplaces(known, undefined).map(({ id }) => id);
 }

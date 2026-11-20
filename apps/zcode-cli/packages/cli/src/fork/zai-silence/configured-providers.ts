@@ -45,8 +45,9 @@ export function readConfiguredProviderHosts(env: NodeJS.ProcessEnv): ProviderHos
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
-  } catch (error) {
-    return { readable: false, reason: `${path}: ${(error as Error).message}` };
+  } catch {
+    // A JSON parser diagnostic can quote a fragment of a provider key.
+    return { readable: false, reason: `${path}: invalid JSON` };
   }
   const templateBaseUrls = lazily(() => readTemplateBaseUrls(env));
   const baseUrls = rulesOf(parsed, "providerRules").flatMap((rule) => {

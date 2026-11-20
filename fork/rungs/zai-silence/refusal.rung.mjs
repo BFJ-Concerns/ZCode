@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { beforeEach, test } from "node:test";
 import { startHttpProxy } from "../../harness/http-proxy.mjs";
@@ -77,6 +77,40 @@ test("a request to a Z.ai host that is not a configured provider is refused and 
     { names: [], connections: [] },
     "refused before it was looked up",
   );
+});
+
+test("the refusal record identifies malformed provider JSON without quoting it", async (t) => {
+  const provider = await startModelProvider();
+  t.after(() => provider.close());
+  await pointNameAtStandIn(ZAI_HOST);
+  const home = await createOwnerHome({
+    providerConfig: providerConfiguration({ baseUrl: provider.baseUrl }),
+  });
+  t.after(() => home.remove());
+  const configPath = join(home.dir, ".zcode", "v2", "provider_config.json");
+  const secret = "KEYFRAG";
+  await writeFile(configPath, `{"apiKey": ${secret}}`);
+
+  const run = launch({
+    home,
+    command: [
+      "plugins",
+      "marketplace",
+      "add",
+      `http://${ZAI_HOST}:${provider.port}${MCP_PATH}.json`,
+    ],
+  });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+  assert.notEqual(outcome.exitCode, 0);
+  assert.match(outcome.stderr, /refused a connection to api\.z\.ai/u);
+
+  const records = await reportedRefusals(home);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].host, ZAI_HOST);
+  assert.ok(!JSON.stringify(records).includes(secret), "the report contains no provider key");
+  assert.match(records[0].providerConfiguration, /provider_config\.json: invalid JSON$/u);
+  assert.deepEqual(provider.requests.filter(isPlantedRequest), [], "the request was refused");
 });
 
 test("the same request is made when the owner has configured that host as a model provider", async (t) => {

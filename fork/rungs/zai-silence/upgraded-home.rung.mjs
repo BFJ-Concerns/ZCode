@@ -10,7 +10,7 @@
  */
 
 import assert from "node:assert/strict";
-import { cp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { launch } from "../../harness/launcher.mjs";
@@ -102,4 +102,46 @@ test("a home upstream seeded is given the fork's document setup scripts", async 
   const fontSource = toolResults(provider.modelRequests().at(-1)).at(-1);
   assert.match(fontSource, /ZCODE_FONT_SOURCE_URL/u, fontSource);
   assert.doesNotMatch(fontSource, /chatglm/u, "the session is not given upstream's setup script");
+});
+
+test("an upgraded home lists only the official plugins bundled by this build", async (t) => {
+  const home = await createOwnerHome({
+    providerConfig: providerConfiguration({ baseUrl: "http://127.0.0.1:9/v1" }),
+  });
+  t.after(() => home.remove());
+  const official = "zcode-plugins-official";
+  const catalogueDir = join(home.dir, ".zcode", "cli", "plugins", "marketplaces", official);
+  await mkdir(catalogueDir, { recursive: true });
+  const downloadedSource = {
+    source: "url",
+    type: "zip",
+    url: "https://zcode.z.ai/download.zip",
+  };
+  const downloaded = {
+    name: official,
+    version: 1,
+    plugins: ["zcode-site", "download-only", "documents"].map((name) => ({
+      name,
+      version: "99.0.0",
+      source: downloadedSource,
+    })),
+  };
+  for (const filename of ["cdn-marketplace.json", "marketplace.json"]) {
+    await writeFile(join(catalogueDir, filename), JSON.stringify(downloaded));
+  }
+
+  const list = launch({ home, command: ["plugins", "list", "--available"], args: ["--json"] });
+  t.after(() => list.dispose());
+  const { exitCode, stderr, stdout } = await list.outcome;
+  assert.equal(exitCode, 0, stderr);
+  const entries = JSON.parse(stdout).available.filter(
+    ({ marketplace }) => marketplace === official,
+  );
+  const names = entries.map(({ name }) => name);
+  for (const name of ["documents", "pdf", "presentations", "spreadsheets"]) {
+    assert.ok(names.includes(name), `missing bundled plugin ${name}`);
+  }
+  assert.ok(!names.includes("zcode-site"), "the catalogue lists site publishing");
+  assert.ok(!names.includes("download-only"), "the catalogue lists an upstream download");
+  assert.match(entries.find(({ name }) => name === "documents").version, /\+fork\.zai-silence$/u);
 });
