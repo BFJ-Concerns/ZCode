@@ -107,14 +107,28 @@ const contains = (range, span) => range.begin <= span.begin && range.end >= span
 const length = (range) => range.end - range.begin;
 
 /** Maps unchanged lines or the gap a deletion leaves to the candidate. */
-function projectLines(span, changes) {
+function projectLines(span, changes, expectedBlob, candidateBlob) {
   let offset = 0;
   for (const { before, after } of changes) {
-    // A change spanning a deletion gap maps it to a region. If that region
-    // grew relative to the expected result, Git cannot locate the deletion
-    // within it separately from the new lines.
     if (length(span) === 0 && contains(before, span)) {
-      return length(after) <= length(before) ? after : undefined;
+      if (length(after) === 0) return after;
+      if (length(before) !== length(after)) return undefined;
+      // Credit a rewritten region only when its surviving lines retain their
+      // original text in order. A matching line count alone cannot distinguish
+      // a rewrite of the neighbours from a substitute for the deleted line.
+      const expected = git(["cat-file", "blob", expectedBlob], { allowFailure: true })
+        .stdout.split("\n")
+        .slice(before.begin, before.end);
+      const actual = git(["cat-file", "blob", candidateBlob], { allowFailure: true })
+        .stdout.split("\n")
+        .slice(after.begin, after.end);
+      return expected.every((line, index) => {
+        const original = line.trim();
+        const next = actual[index].trim();
+        return next === original || (original && next.startsWith(`${original} `));
+      })
+        ? after
+        : undefined;
     }
     if (before.end <= span.begin) offset = after.end - before.end;
     else if (before.begin >= span.end) break;
@@ -142,7 +156,7 @@ function containsTextEdits(step, path, target, targetPath) {
     return false;
   }
   return edits.every((edit) => {
-    const projected = projectLines(edit.after, afterToCandidate);
+    const projected = projectLines(edit.after, afterToCandidate, after, candidate);
     return (
       projected &&
       candidateChanges.some(

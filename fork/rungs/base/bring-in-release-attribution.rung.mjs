@@ -191,10 +191,11 @@ for (const [scenario, path, step, releaseFile, supplied] of [
   });
 }
 
-for (const [action, lineSeven] of [
+for (const [action, lineSeven, lineSix = ["c 6 upstream"]] of [
   ["deletes", []],
   ["keeps", ["c 7"]],
   ["replaces", ["c 7 upstream"]],
+  ["replaces and deletes a neighbour of", ["c 7 upstream"], []],
 ]) {
   const releaseDeletesLine = lineSeven.length === 0;
   test(`the mixed-edit account reports what supplied a deletion when the release ${action} the line`, (t) => {
@@ -202,8 +203,9 @@ for (const [action, lineSeven] of [
     const betaLines = withLine(numbered("c"), 5, "// fork(beta): line five", "beta 5");
     const withMarker = withLine(betaLines, 1, "c 1", "// fork(beta): marker");
     const releaseFile = withMarker.flatMap((line) => {
+      if (line === "c 6") return lineSix;
       if (line === "c 7") return lineSeven;
-      return [line === "c 6" || line === "c 8" ? `${line} upstream` : line];
+      return [line === "c 8" ? "c 8 upstream" : line];
     });
     const { root, repository } = forkAndRelease(
       t,
