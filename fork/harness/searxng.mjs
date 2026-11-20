@@ -2,6 +2,9 @@
  * Stand-in SearXNG instance: answers the search endpoint on loopback and records
  * every query it receives.
  *
+ * It answers as an instance with the JSON format enabled does: JSON only for a search
+ * that asks for `format=json`, and the HTML results page for one that does not.
+ *
  * A rung names `url` as the instance in the owner's configuration, drives the fork
  * to search, and reads `queries` to see what arrived.
  */
@@ -56,6 +59,11 @@ export async function startSearxng({ results = () => [] } = {}) {
     };
     queries.push(query);
     const found = results(query);
+    if (params.format !== "json") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end("<!DOCTYPE html><html><head><title>SearXNG</title></head><body></body></html>");
+      return;
+    }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
       JSON.stringify({ query: query.q, number_of_results: found.length, results: found }),
