@@ -52,14 +52,19 @@ import { parseArgs } from "node:util";
 import {
   cherryPick,
   cleanUpReplay,
+  filesOf,
   foldForLayout,
   forkCheckout,
   git,
   LayoutError,
   moveReleaseRef,
+  omittedEdits,
+  pathsBetween,
   pickForLayout,
+  previewPick,
   refIsSet,
   refTip,
+  releaseChanges,
   run,
 } from "./bring-in-release-git.mjs";
 
@@ -183,16 +188,6 @@ function releaseLabel(commit, given) {
   if (tag.status === 0) return tag.stdout.trim();
   const version = /\bv\d+\.\d+\.\d+\S*/.exec(git(["log", "-1", "--format=%s", commit]));
   return version ? version[0] : short(commit);
-}
-
-/** The release's changes since the fork's base, by path at the base and at the release. */
-function releaseChanges(base, release) {
-  const changes = [];
-  for (const line of lines(git(["diff", "--name-status", "-M", base, release]))) {
-    const [status, from, to] = line.split("\t");
-    changes.push({ status: status[0], from, to: to ?? from });
-  }
-  return changes;
 }
 
 /** The workspace packages the command line builds from, at the worktree's checkout. */
@@ -374,7 +369,7 @@ function stepName(step, mark = (text) => text) {
   return `${mark(step.label)}, its ${made} made on ${mark(step.follows)}`;
 }
 
-function stepLine(state, step) {
+function stepLine(state, step, earlierRework) {
   const parts = [];
   const folded = step.follows ? 0 : step.commits.length - 1;
   const name = `${stepName(step, bold)}${folded > 0 ? ` (${repairs(folded)} folded in)` : ""}`;
@@ -392,12 +387,29 @@ function stepLine(state, step) {
   if (step.conflicts.length > 0 && touched.length > 0) {
     parts.push(`the release changed ${listed(touched)}`);
   }
-  if (step.empty) {
-    parts.push("its commit is empty: the release already makes every change it made");
-  } else if (step.provided?.length > 0) {
-    parts.push(`the release already makes its changes to ${listed(step.provided.map(code))}`);
+  if (step.commit) {
+    const { empty, upstream, removed, supplied } = omittedEdits(
+      state.release.commit,
+      state.changes,
+      step,
+      earlierRework,
+    );
+    if (empty && step.files.length > 0 && upstream.size === step.files.length) {
+      parts.push("its commit is empty: the release already makes every change it made");
+    } else {
+      if (empty) parts.push("its commit is empty");
+      const provided = step.edits.filter((path) => upstream.has(path));
+      if (provided.length > 0) {
+        parts.push(`the release already makes its changes to ${listed(provided.map(code))}`);
+      }
+    }
+    if (removed.length > 0) parts.push(`rework removed its edits to ${listed(removed.map(code))}`);
+    if (supplied.length > 0) {
+      parts.push(`earlier rework supplied its edits to ${listed(supplied.map(code))}`);
+    }
+    if (step.reworkedFiles?.length > 0) parts.push("reworked");
+    for (const path of step.reworkedFiles ?? []) earlierRework.add(path);
   }
-  if (step.reworked && step.status !== "conflicted") parts.push("reworked");
   if (step.proof) parts.push(proofText(step.proof));
   if (step.alsoEdits.length > 0) parts.push(`it also edits ${step.alsoEdits.join(", ")}`);
   return `- ${name}: ${parts.join("; ")}.`;
@@ -411,7 +423,7 @@ function packageOf(path, packages) {
   return packages.find((directory) => path.startsWith(`${directory}/`));
 }
 
-function account(state) {
+function account(state, differenceLines) {
   const { release, base, fork } = state;
   const out = [];
   const steps = state.steps ?? [];
@@ -454,7 +466,7 @@ function account(state) {
   }
   if (steps.length > 0) {
     out.push("", "## The differences", "");
-    for (const step of steps) out.push(stepLine(state, step));
+    out.push(...differenceLines);
   }
   const placed = steps.filter((step) => step.follows);
   if (placed.length > 0) {
@@ -522,10 +534,10 @@ function account(state) {
 }
 
 function unexercisedAreas(state) {
-  if (!state.packages) return [];
+  if (!state.packages || !["moved", "ready"].includes(state.outcome)) return [];
   const packages = state.packages.atRelease;
   const forkAreas = new Set(
-    state.steps.flatMap((step) => step.files.map((path) => packageOf(path, packages))),
+    pathsBetween(state.release.commit, state.head).map((path) => packageOf(path, packages)),
   );
   const changed = new Map();
   for (const change of state.changes) {
@@ -545,8 +557,13 @@ class Refusal extends Error {}
 const HEAD = (worktree) => git(["rev-parse", "HEAD"], { cwd: worktree });
 /** A step not yet replayed onto the release. */
 const markPending = (step) =>
-  Object.assign(step, { status: "pending", commit: undefined, conflicts: [], proof: undefined });
-const filesOf = (commit) => lines(git(["diff", "--name-only", `${commit}^`, commit]));
+  Object.assign(step, {
+    status: "pending",
+    commit: undefined,
+    conflicts: [],
+    proof: undefined,
+    reworkedFiles: [],
+  });
 const treeOf = (commit) => git(["rev-parse", `${commit}^{tree}`]);
 const branchExists = (branch) =>
   git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFailure: true })
@@ -758,25 +775,21 @@ function resume(state) {
   });
   state.steps.forEach((step, index) => {
     if (index >= commits.length) return markPending(step);
-    if (step.status === "passed" && step.commit === commits[index]) return;
-    if (step.commit !== commits[index] && step.status !== "pending") step.reworked = true;
-    Object.assign(step, { status: "replayed", commit: commits[index], proof: undefined });
+    const commit = commits[index];
+    if (step.commit !== commit || !step.reworkedFiles) {
+      const automatic = previewPick(`${commit}^`, step.replay);
+      step.reworkedFiles = [
+        ...new Set([...automatic.conflicts, ...pathsBetween(automatic.tree, commit)]),
+      ];
+    }
+    if (step.status === "passed" && step.commit === commit) return;
+    Object.assign(step, { status: "replayed", commit, proof: undefined });
   });
 }
 
 function stopAt(state, reason) {
   state.outcome = "stopped";
   state.stopReason = reason;
-}
-
-/** The upstream files a step edits whose changes the release already makes. */
-function providedByRelease(state, step) {
-  const byPath = new Map(state.changes.map((change) => [change.from, change]));
-  const changedNow = new Set(filesOf(step.commit));
-  return step.edits.filter((path) => {
-    const change = byPath.get(path);
-    return change?.status !== "D" && !changedNow.has(change?.to ?? path);
-  });
 }
 
 /**
@@ -809,8 +822,6 @@ function replay(state) {
       }
       step.commit = HEAD(state.worktree);
     }
-    step.empty = treeOf(step.commit) === treeOf(`${step.commit}^`);
-    step.provided = providedByRelease(state, step);
     const atTop = step.commit === HEAD(state.worktree);
     if (!atTop) git(["checkout", "--quiet", "--detach", step.commit], { cwd: state.worktree });
     step.proof = runGates(state.worktree, state.gates, state.gateLog);
@@ -918,6 +929,8 @@ async function main() {
     if (!(error instanceof Stop || error instanceof LayoutError)) throw error;
     stopAt(state, error.message);
   }
+  const earlierRework = new Set();
+  const differenceLines = (state.steps ?? []).map((step) => stepLine(state, step, earlierRework));
   if (state.outcome === "running") await moveFork(state);
   if (state.outcome === "moved") {
     try {
@@ -927,7 +940,7 @@ async function main() {
     }
   }
   if (state.outcome !== "moved" && existsSync(state.worktree)) save(state);
-  const text = account(state);
+  const text = account(state, differenceLines);
   process.stdout.write(text);
   if (options.account) {
     try {

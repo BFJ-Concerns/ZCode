@@ -167,6 +167,7 @@ test("a signing failure stops at the pick and resumes with the commit made by ha
   assert.doesNotMatch(resumed.stderr, /^base$/m, "base keeps its gate result");
   assert.match(resumed.stderr, /^alpha$/m, "the manually completed pick is gated");
   assert.equal(git(repository, "rev-parse", "fork~1"), finished);
+  assert.doesNotMatch(resumed.account, /^- \*\*alpha\*\*.*reworked/m);
   assert.deepEqual(subjects(repository, "v2.0.0..fork"), [
     "beta: change line five",
     "alpha: call alpha",
@@ -723,6 +724,67 @@ test("a difference the release already provides is replayed empty, and one it pa
   assert.doesNotMatch(account, /\*\*alpha\*\*.*already makes/);
 });
 
+test("rework in an earlier step can supply a later join even where the release changed the file", (t) => {
+  const releaseA = withLine(numbered("a"), 9, "a 9 gate fails");
+  const releaseC = withLine(numbered("c"), 9, "c 9 changed upstream");
+  const { root, repository } = forkAndRelease(t, (repository) => {
+    commit(repository, "chore: sync source v2.0.0", {
+      "app/src/a.ts": releaseA,
+      "app/src/c.ts": releaseC,
+    });
+  });
+  assert.equal(bringIn(repository).exitCode, 1);
+
+  const worktree = join(root, "repository-Worktrees", "bring-in-v2.0.0");
+  write(worktree, {
+    "app/src/a.ts": releaseA,
+    "app/src/c.ts": withLine(releaseC, 5, "// fork(beta): line five", "beta 5"),
+  });
+  git(worktree, "commit", "--quiet", "--all", "--amend", "--no-edit");
+
+  const { exitCode, account, stderr } = bringIn(repository);
+  assert.equal(exitCode, 0, `${account}${stderr}`);
+  assert.match(
+    account,
+    /^- \*\*alpha\*\*.*rework removed its edits to `app\/src\/a\.ts`.*reworked/m,
+  );
+  assert.match(account, /^- \*\*beta\*\*.*earlier rework supplied its edits to `app\/src\/c\.ts`/m);
+  assert.doesNotMatch(account, /^- \*\*(alpha|beta)\*\*.*already makes/m);
+  assert.doesNotMatch(account, /^- \*\*beta\*\*.*; reworked/m);
+});
+
+test("an empty reworked commit does not credit upstream with edits it removed", (t) => {
+  const { root, repository } = forkAndRelease(
+    t,
+    (repository) =>
+      commit(repository, "chore: sync source v2.0.0", {
+        "app/src/c.ts": withLine(numbered("c"), 5, "c 5 changed upstream"),
+      }),
+    {
+      fork: (repository) => {
+        forkOfThree(repository);
+        git(repository, "rm", "fork/rungs/beta/stand-in.rung.mjs");
+        commit(repository, "beta: join another file", {
+          "app/src/d.ts": withLine(numbered("d"), 5, "// fork(beta): line five", "beta d5"),
+        });
+      },
+      upstream: { "app/src/d.ts": numbered("d") },
+    },
+  );
+  assert.equal(bringIn(repository).exitCode, 1);
+
+  const worktree = join(root, "repository-Worktrees", "bring-in-v2.0.0");
+  git(worktree, "restore", "--source=HEAD", "--staged", "--worktree", ".");
+  git(worktree, "commit", "--quiet", "--allow-empty", "--no-edit");
+  const { exitCode, account, stderr } = bringIn(repository);
+  assert.equal(exitCode, 0, `${account}${stderr}`);
+  assert.match(
+    account,
+    /^- \*\*beta\*\*.*its commit is empty; rework removed its edits to `app\/src\/c\.ts`, `app\/src\/d\.ts`.*reworked/m,
+  );
+  assert.doesNotMatch(account, /^- \*\*beta\*\*.*already makes/m);
+});
+
 test("the account breaks the release's changes down by the packages the command line builds from", (t) => {
   const manifest = (name, dependencies = {}) =>
     JSON.stringify({ name, version: "1.0.0", dependencies });
@@ -731,13 +793,13 @@ test("the account breaks the release's changes down by the packages the command 
     "pnpm-workspace.yaml": ["packages:", '  - "app"', '  - "libs/*"'],
     "app/package.json": manifest("@zcode/cli", cliDependencies),
   });
-  const { repository } = forkAndRelease(
+  const { root, repository } = forkAndRelease(
     t,
     (repository) =>
       commit(repository, "chore: sync source v2.0.0", {
         ...workspace({ "@zcode/lib": "workspace:*", "@zcode/extra": "workspace:*" }),
         "app/src/a.ts": withLine(numbered("a"), 9, "a 9 changed upstream"),
-        "libs/lib/src/lib.ts": ["changed upstream"],
+        "libs/lib/src/lib.ts": withLine(numbered("lib"), 9, "lib 9 changed upstream"),
         "libs/extra/package.json": manifest("@zcode/extra"),
         "libs/other/src/other.ts": ["changed upstream"],
       }),
@@ -745,7 +807,7 @@ test("the account breaks the release's changes down by the packages the command 
       upstream: {
         ...workspace({ "@zcode/lib": "workspace:*", "@zcode/old": "workspace:*" }),
         "libs/lib/package.json": manifest("@zcode/lib"),
-        "libs/lib/src/lib.ts": ["lib"],
+        "libs/lib/src/lib.ts": numbered("lib"),
         "libs/old/package.json": manifest("@zcode/old"),
         "libs/other/package.json": manifest("@zcode/other"),
         "libs/other/src/other.ts": ["other"],
@@ -772,6 +834,47 @@ test("the account breaks the release's changes down by the packages the command 
     /`app`|`libs\/other`/,
     "app holds alpha; other is not built from",
   );
+
+  git(repository, "branch", "reworked-fork", "v1.0.0");
+  git(repository, "switch", "--quiet", "reworked-fork");
+  forkOfThree(repository);
+  commit(repository, "alpha: join the library", {
+    "libs/lib/src/lib.ts": withLine(
+      numbered("lib"),
+      2,
+      "lib 2",
+      "// fork(alpha): calls alpha",
+      "alpha();",
+    ),
+  });
+  git(repository, "switch", "--quiet", "--detach");
+  const gate = "test ! -f app/src/fork/alpha/index.ts";
+  const args = ["--fork", "reworked-fork", "--gate", gate];
+  const stopped = bringIn(repository, ...args);
+  assert.equal(stopped.exitCode, 1, `${stopped.account}${stopped.stderr}`);
+  assert.doesNotMatch(stopped.account, /## Changed where no difference sits/);
+  const worktree = join(root, "repository-Worktrees", "bring-in-v2.0.0");
+  git(worktree, "rm", "app/src/fork/alpha/index.ts");
+  git(
+    worktree,
+    "restore",
+    "--source=HEAD^",
+    "--staged",
+    "--worktree",
+    "app/src/a.ts",
+    "libs/lib/src/lib.ts",
+  );
+  write(worktree, { "libs/extra/src/fork/alpha/index.ts": ["export const alpha = 2;"] });
+  git(worktree, "add", "--all");
+  git(worktree, "commit", "--quiet", "--amend", "--no-edit");
+
+  const resumed = bringIn(repository, ...args);
+  assert.equal(resumed.exitCode, 0, `${resumed.account}${resumed.stderr}`);
+  const replayAreas = resumed.account.slice(
+    resumed.account.indexOf("## Changed where no difference sits"),
+  );
+  assert.match(replayAreas, /^- `libs\/lib`: 1 file$/m);
+  assert.doesNotMatch(replayAreas, /^- `libs\/extra`:/m);
 });
 
 test("a fork commit that changes two differences together stops the process before any replay", (t) => {

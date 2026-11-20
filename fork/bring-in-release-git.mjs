@@ -32,6 +32,80 @@ export function cherryPick(cwd, commit, { sign = true } = {}) {
   return { ok: false, conflicts, diagnostic: gitDiagnostic(result) };
 }
 
+/** Previews a cherry-pick with Git's merge engine, without touching the index or checkout. */
+export function previewPick(parent, commit) {
+  const args = [
+    "merge-tree",
+    "--write-tree",
+    "--name-only",
+    "--no-messages",
+    "-z",
+    `--merge-base=${commit}^`,
+    parent,
+    commit,
+  ];
+  const result = git(args, { allowFailure: true });
+  if (result.status !== 0 && result.status !== 1) {
+    throw new Error(`Git could not preview the pick of ${commit}: ${gitDiagnostic(result)}`);
+  }
+  const [tree, ...paths] = result.stdout.split("\0");
+  return { tree, conflicts: paths.filter(Boolean) };
+}
+
+const records = (text) => text.split("\0").filter(Boolean);
+
+/** The release's changes since the fork's base, by path at the base and at the release. */
+export function releaseChanges(base, release) {
+  const changes = [];
+  const entries = records(git(["diff", "--name-status", "-z", "-M", base, release]));
+  for (let i = 0; i < entries.length; ) {
+    const status = entries[i++][0];
+    const from = entries[i++];
+    const to = status === "R" || status === "C" ? entries[i++] : from;
+    changes.push({ status, from, to });
+  }
+  return changes;
+}
+
+export const pathsBetween = (from, to) =>
+  records(git(["diff", "--name-only", "--no-renames", "-z", from, to]));
+export const filesOf = (commit) => pathsBetween(`${commit}^`, commit);
+
+/** Traces missing edits to the release itself or to rework along the replay. */
+export function omittedEdits(release, changes, step, earlierRework) {
+  const changed = new Set(filesOf(step.commit));
+  const renamed = new Map(
+    changes.filter((change) => change.status === "R").map(({ from, to }) => [from, to]),
+  );
+  const destination = (path) => renamed.get(path) ?? path;
+  const missing = new Set(
+    step.files.filter((path) => !changed.has(path) && !changed.has(destination(path))),
+  );
+
+  // An upstream change to the file is only a candidate. If replaying this step on
+  // the release alone still edits the file or conflicts, the release did not supply it.
+  const releasePaths = new Set(changes.flatMap(({ from, to }) => [from, to]));
+  const candidates = [...missing].filter((path) => releasePaths.has(path));
+  const upstream = new Set();
+  if (candidates.length > 0) {
+    const preview = previewPick(release, step.replay);
+    const outstanding = new Set([...preview.conflicts, ...pathsBetween(release, preview.tree)]);
+    for (const path of candidates) {
+      if (!outstanding.has(path) && !outstanding.has(destination(path))) upstream.add(path);
+    }
+  }
+
+  const reworked = new Set(step.reworkedFiles ?? []);
+  const removed = [];
+  const supplied = [];
+  for (const path of step.edits) {
+    if (!missing.has(path) || upstream.has(path)) continue;
+    if (reworked.has(path) || reworked.has(destination(path))) removed.push(path);
+    else if (earlierRework.has(path) || earlierRework.has(destination(path))) supplied.push(path);
+  }
+  return { empty: changed.size === 0, upstream, removed, supplied };
+}
+
 export class LayoutError extends Error {
   constructor(operation, diagnostic) {
     super(
