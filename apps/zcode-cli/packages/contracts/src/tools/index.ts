@@ -29,6 +29,8 @@ export * from "./task-output.js";
 export * from "./task-stop.js";
 export * from "./submit-result.js";
 export * from "./websearch.js";
+// fork(searxng-search): publishes the client image search schemas
+export * from "../fork/searxng-search/index.js";
 export * from "./workflow.js";
 export * from "./create-workflow.js";
 // 修订入口：名字常量被 core 的

@@ -3,21 +3,20 @@ import {
   WEBSEARCH_TOOL_CONTRACT,
   WebSearchInputSchema,
   WebSearchOutputSchema,
+  ImageSearchInputSchema,
+  ImageSearchOutputSchema,
+  ImageSearchInputJsonSchema,
+  ImageSearchOutputJsonSchema,
   type WebSearchInput,
   type WebSearchOutput,
 } from "@zcode/contracts";
 import { z } from "zod";
+import { fitContentWithSuffix } from "../../tool/executor/result-content-projection.js";
+import { formatWebSearchModelContent } from "../../tool/handlers/websearch-results.js";
 import type { ToolEntry, ToolExecutionContext, ToolHandler } from "../../tool/types.js";
 
 const SEARCH_TIMEOUT_MS = 60_000;
 const MAX_RESULTS = 20;
-const ImageSearchInputSchema = z.object({ query: z.string().min(2) }).strict();
-const ImageSearchOutputSchema = z.object({
-  query: z.string(),
-  results: z.array(
-    z.object({ url: z.string(), imageUrl: z.string(), title: z.string().optional() }),
-  ),
-});
 const SearxngResponseSchema = z.object({ results: z.array(z.unknown()) });
 const SearxngResultSchema = z.object({
   url: z.string(),
@@ -52,12 +51,13 @@ function createSearchTools(instance: string): ToolEntry[] {
       runtimeInputSchema: WebSearchInputSchema,
       runtimeOutputSchema: WebSearchOutputSchema,
       handler: webSearchHandler(instance),
+      formatModelContent: formatSearxngWebSearch,
     },
     {
       ...searchContract,
       metadata: searchMetadata("ImageSearch", "Search for images and their source pages."),
-      inputSchema: z.toJSONSchema(ImageSearchInputSchema),
-      outputSchema: z.toJSONSchema(ImageSearchOutputSchema),
+      inputSchema: ImageSearchInputJsonSchema,
+      outputSchema: ImageSearchOutputJsonSchema,
       runtimeInputSchema: ImageSearchInputSchema,
       runtimeOutputSchema: ImageSearchOutputSchema,
       handler: async (value, context) => {
@@ -116,7 +116,7 @@ function webSearchHandler(instance: string): ToolHandler {
       .slice(0, MAX_RESULTS);
     const results = matches.map(({ url, title }) => ({ url: url.href, title }));
     const snippets = matches.flatMap(({ url, title, content }) =>
-      content ? [`${title ?? url.href}: ${content}`] : [],
+      content ? [title && title !== url.href ? `${title}: ${content}` : content] : [],
     );
     return {
       query: input.query,
@@ -126,6 +126,62 @@ function webSearchHandler(instance: string): ToolHandler {
       durationMs: Math.max(0, Date.now() - startedAt),
     } satisfies WebSearchOutput;
   };
+}
+
+function formatSearxngWebSearch(value: unknown): string {
+  const parsed = WebSearchOutputSchema.safeParse(value);
+  if (!parsed.success) return formatWebSearchModelContent(value);
+
+  const { summary, query } = parsed.data;
+  const budget = Math.min(
+    searchContract.resultBudget!.maxInlineBytes,
+    searchContract.resultBudget!.maxModelBytes,
+  );
+  // The model needs complete link destinations. Label untitled pages without
+  // repeating the URL, and keep the highest ranked links when space runs out.
+  const links = parsed.data.sources.map(({ url, title }) => ({
+    url,
+    title: title && title !== url ? title : URL.parse(url)?.hostname,
+  }));
+  const render = (displayQuery: string, displaySummary?: string) =>
+    formatWebSearchModelContent(
+      {
+        ...parsed.data,
+        query: displayQuery,
+        results: [],
+        sources: links,
+        summary: displaySummary,
+      },
+      (url) => url,
+    );
+
+  const full = render(query, summary);
+  if (Buffer.byteLength(full) <= budget) return full;
+
+  const displayQuery =
+    Buffer.byteLength(query) > 1024 ? fitContentWithSuffix(query, 1024, "…", "head") : query;
+  const bounded = render(displayQuery, summary);
+  if (Buffer.byteLength(bounded) <= budget) return bounded;
+
+  // Measure the upstream formatter's layout with a minimal summary. Bound the
+  // summary first when the links fit, and drop whole links if they need room.
+  const shortSummary =
+    summary && Buffer.byteLength(summary) > 256
+      ? fitContentWithSuffix(summary, 256, "…", "head")
+      : summary;
+  let shortest = render(displayQuery, shortSummary);
+  while (Buffer.byteLength(shortest) > budget && links.length > 0) {
+    links.pop();
+    shortest = render(displayQuery, shortSummary);
+  }
+  if (!shortSummary || !summary) return shortest;
+  const summaryBudget = budget - Buffer.byteLength(shortest) + Buffer.byteLength(shortSummary);
+  return render(
+    displayQuery,
+    Buffer.byteLength(summary) > summaryBudget
+      ? fitContentWithSuffix(summary, summaryBudget, "…", "head")
+      : summary,
+  );
 }
 
 function matchesDomains(hostname: string, input: WebSearchInput): boolean {

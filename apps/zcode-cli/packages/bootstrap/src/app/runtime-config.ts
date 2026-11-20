@@ -14,8 +14,6 @@ import {
 import { omitMcpServers, resolveTrustedOfficialCuaServerNames } from "../mcp-config.js";
 import { resolveDefaultEmbeddedSearchBackend } from "./embedded-search-backend.js";
 import { getProjectMemoryRoot } from "./paths.js";
-// fork(searxng-search): excludes cached copies of the bundled image search server
-import { withoutBundledImageSearch } from "../fork/searxng-search/index.js";
 import type { ZCodeAppOptions } from "./types.js";
 import {
   resolveRegistryOwnedModelSelection,
@@ -94,8 +92,7 @@ export function resolveAppRuntimeConfig(input: {
   // 不包含插件注册的 MCP。宿主内建 server 最后合并并保留其 identity，避免用户或第三方
   // 用同名配置劫持 mcp__node_repl__*；普通 plugin MCP 仍允许显式用户配置覆盖。
   const configuredMcpServers = {
-    // fork(searxng-search): replaces the bundled image search server
-    ...withoutBundledImageSearch(pluginMcpServers),
+    ...pluginMcpServers,
     ...(options.runtimeConfig?.mcp?.servers ?? configResult.config.mcp.servers),
     ...builtInMcpServers,
   };

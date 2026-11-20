@@ -55,6 +55,8 @@ import {
   resolveInstalledPluginRootAsync,
 } from "./marketplace.js";
 import { loadBundledOfficialPluginRoots } from "./official-marketplace.js";
+// fork(searxng-search): recognises retired official image search in plugin caches
+import { isRetiredImageSearchPlugin } from "../fork/searxng-search/index.js";
 import type {
   LoadedPlugin,
   PluginAbortOptions,
@@ -206,6 +208,8 @@ export class NodePluginAdapter implements PluginPort {
       throwIfAborted(options);
       const loaded = await loadPlugin(candidate, diagnostics, materials);
       if (!loaded) continue;
+      // fork(searxng-search): keeps retired image search out of every plugin consumer
+      if (isRetiredImageSearchPlugin(loaded.id)) continue;
       // 内置（官方）插件被「卸载」后只在 user config 写 suppressedBuiltins 标记。这里在发现层
       // 用插件的权威 id（manifest 名 @ marketplace）过滤，不依赖缓存文件是否已被物理删除——
       // 这样即便 app 升级遗留了旧版本缓存目录、或会话内 facade 持有过时配置，被卸载的内置插件
