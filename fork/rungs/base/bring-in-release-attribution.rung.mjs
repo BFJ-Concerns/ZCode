@@ -127,6 +127,70 @@ test("rework in an earlier step can supply a later join even where the release c
   assert.doesNotMatch(account, /^- \*\*beta\*\*.*; reworked/m);
 });
 
+for (const [scenario, path, step, releaseFile, supplied] of [
+  [
+    "credits a replacement with changed neighbours",
+    "app/src/c.ts",
+    "beta",
+    [
+      ...numbered("c", 3),
+      "c 4 upstream",
+      "// fork(beta): line five",
+      "beta 5",
+      "c 6 upstream",
+      ...numbered("c").slice(6),
+    ],
+    true,
+  ],
+  [
+    "credits rework when the release also keeps the line the join replaces",
+    "app/src/c.ts",
+    "beta",
+    [
+      ...numbered("c", 3),
+      "c 4 upstream",
+      "// fork(beta): line five",
+      "beta 5",
+      "c 5",
+      "c 6 upstream",
+      ...numbered("c").slice(6),
+    ],
+    false,
+  ],
+  [
+    "credits an insertion with changed neighbours",
+    "app/src/a.ts",
+    "alpha",
+    withLine(numbered("a"), 2, "a 2 upstream", "// fork(alpha): calls alpha", "alpha();").map(
+      (line) => (line === "a 3" ? "a 3 upstream" : line),
+    ),
+    true,
+  ],
+]) {
+  test(`the account ${scenario}`, (t) => {
+    const { root, repository } = forkAndRelease(t, (repository) => {
+      commit(repository, "chore: sync source v2.0.0", { [path]: releaseFile });
+    });
+    const stopped = bringIn(repository);
+    assert.equal(stopped.exitCode, 1, `${stopped.account}${stopped.stderr}`);
+    assert.ok(stopped.account.includes(`**${step}**`));
+    assert.ok(stopped.account.includes(`conflicted in \`${path}\``));
+
+    const worktree = join(root, "repository-Worktrees", "bring-in-v2.0.0");
+    git(worktree, "checkout", "HEAD", "--", path);
+    git(worktree, "cherry-pick", "--continue");
+    const resumed = bringIn(repository);
+
+    assert.equal(resumed.exitCode, 0, `${resumed.account}${resumed.stderr}`);
+    const difference = resumed.account.split("\n").find((line) => line.startsWith(`- **${step}**`));
+    const adopted = /the release already makes its changes to/;
+    const removed = /rework removed its edits/;
+    assert.match(difference, supplied ? adopted : removed);
+    assert.doesNotMatch(difference, supplied ? removed : adopted);
+    assert.equal(git(repository, "show", `fork:${path}`), releaseFile.join("\n"));
+  });
+}
+
 test("an empty reworked commit does not credit upstream with edits it removed", (t) => {
   const { root, repository } = forkAndRelease(
     t,

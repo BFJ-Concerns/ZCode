@@ -78,7 +78,13 @@ function blobAt(ref, path) {
   return result.status === 0 ? result.stdout.trim() : undefined;
 }
 
-/** The old and new line ranges Git changed between two text blobs. */
+/** Half-open line ranges, with an empty range at a Git insertion or deletion point. */
+function lineRange(start, count) {
+  const length = Number(count ?? 1);
+  const begin = Number(start) - Number(length > 0);
+  return { begin, end: begin + length };
+}
+
 function changedLines(from, to) {
   const diff = git([
     "diff",
@@ -89,44 +95,53 @@ function changedLines(from, to) {
     from,
     to,
   ]);
-  const ranges = [...diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)];
-  return ranges.map(([, oldStart, oldCount, newStart, newCount]) => ({
-    oldStart: Number(oldStart),
-    oldCount: Number(oldCount ?? 1),
-    newStart: Number(newStart),
-    newCount: Number(newCount ?? 1),
-  }));
+  return [...diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)].map(
+    ([, oldStart, oldCount, newStart, newCount]) => ({
+      before: lineRange(oldStart, oldCount),
+      after: lineRange(newStart, newCount),
+    }),
+  );
 }
 
+/** Maps a span of unchanged, consecutive lines through a diff. */
+function projectLines(span, changes) {
+  let offset = 0;
+  for (const { before, after } of changes) {
+    if (before.end <= span.begin) offset = after.end - before.end;
+    else if (before.begin >= span.end) break;
+    else return undefined;
+  }
+  return { begin: span.begin + offset, end: span.end + offset };
+}
+
+const contains = (range, span) => range.begin <= span.begin && range.end >= span.end;
+
 /**
- * Adjacent joins can conflict in a preview even when the insertion is already present.
- * Compare the original inserted lines to the candidate using Git's line alignment.
+ * A preview can conflict on surrounding changes. Check that the candidate has the
+ * edited lines together and that its diff from the original file puts them at the edit
+ * site, replacing the original lines or inserting at the original boundary.
  */
-function retainsInsertions(step, path, target, targetPath) {
+function containsTextEdits(step, path, target, targetPath) {
   const before = blobAt(`${step.replay}^`, path);
   const after = blobAt(step.replay, path);
   const candidate = blobAt(target, targetPath);
-  if (!before || !after || !candidate) return false;
-  const insertions = changedLines(before, after);
-  if (insertions.length === 0 || insertions.some(({ oldCount }) => oldCount !== 0)) return false;
+  if (!before || !after || !candidate || candidate === before) return false;
   if (after === candidate) return true;
-  const changes = changedLines(after, candidate);
-  if (changes.length === 0) return false;
-  const unchanged = (start, end) =>
-    changes.every(({ oldStart, oldCount }) =>
-      oldCount === 0
-        ? oldStart < start || oldStart >= end
-        : oldStart + oldCount <= start || oldStart > end,
-    );
-  const text = git(["cat-file", "blob", after], { allowFailure: true }).stdout;
-  const lineCount = text.split("\n").length - Number(text.endsWith("\n"));
-  // Keep at least one adjacent line aligned with each insertion so a matching
-  // snippet elsewhere in the file does not by itself count as upstream adoption.
-  return insertions.every(({ newStart, newCount }) => {
-    const end = newStart + newCount - 1;
+
+  const edits = changedLines(before, after);
+  const candidateChanges = changedLines(before, candidate);
+  const afterToCandidate = changedLines(after, candidate);
+  if (edits.length === 0 || candidateChanges.length === 0 || afterToCandidate.length === 0) {
+    return false;
+  }
+  return edits.every((edit) => {
+    if (edit.after.begin === edit.after.end) return false;
+    const projected = projectLines(edit.after, afterToCandidate);
     return (
-      (newStart > 1 && unchanged(newStart - 1, end)) ||
-      (end < lineCount && unchanged(newStart, end + 1))
+      projected &&
+      candidateChanges.some(
+        (change) => contains(change.before, edit.before) && contains(change.after, projected),
+      )
     );
   });
 }
@@ -143,8 +158,8 @@ export function omittedEdits(release, changes, step, earlierSteps) {
   );
 
   // A clean no-op on the candidate tree proves it already supplies the edit.
-  // For adjacent insertions, the line comparison can establish this even if Git's
-  // merge would conflict because the candidate lacks neighbouring fork lines.
+  // When neighbouring changes obstruct the preview, compare the candidate's
+  // text edits at the original edit site.
   const previews = new Map();
   const supplies = (target, path) => {
     if (!previews.has(target)) {
@@ -155,7 +170,7 @@ export function omittedEdits(release, changes, step, earlierSteps) {
     const targetPath = destination(path);
     return (
       (!outstanding.has(path) && !outstanding.has(targetPath)) ||
-      retainsInsertions(step, path, target, targetPath)
+      containsTextEdits(step, path, target, targetPath)
     );
   };
 
