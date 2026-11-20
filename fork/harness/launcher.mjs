@@ -14,13 +14,13 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 import { requireSandbox } from "./network-sandbox.mjs";
+import { endProcessTree, trackZcode } from "./zcode-processes.mjs";
 
 /** The command line and the terminal UI, as `node fork/build.mjs` leaves them. */
 export const ZCODE_ENTRY = fileURLToPath(
   new URL("../../apps/zcode-cli/packages/cli/dist/zcode.cjs", import.meta.url),
 );
 
-const KILL_SIGNAL = "SIGKILL";
 /** How often a live run's stdout is read, so that `event()` can see a line soon after it is printed. */
 const OUTPUT_POLL_MS = 20;
 
@@ -42,13 +42,13 @@ const OUTPUT_POLL_MS = 20;
  *   Settles when the `zcode` process has exited, whatever it left running.
  * @property {(matches: (event: any) => boolean) => Promise<any>} event
  *   The first stdout line `matches` accepts, past or future. Rejects if the run
- *   exits without printing one.
+ *   exits, or cannot start, without printing one.
  * @property {(signal?: NodeJS.Signals) => Promise<RunOutcome>} stop
  *   Sends the signal to `zcode` itself, as a launcher stopping a worker does, and
  *   waits for the exit.
  * @property {() => Promise<void>} dispose
- *   Kills the run and the process group it started. Call it when the rung is over,
- *   however it ended.
+ *   Kills the run and everything it started that is still running, and waits until
+ *   they are gone. Call it when the rung is over, however it ended.
  */
 
 /**
@@ -103,7 +103,7 @@ export function launch({
       cwd,
       env: home.env,
       stdio: ["ignore", stdoutReader.fd, stderrReader.fd],
-      // Its own process group, so dispose() can reach the commands the run started.
+      // Its own process group, so dispose() can find the commands the run started.
       detached: true,
     },
   );
@@ -115,12 +115,13 @@ export function launch({
   let unparsed = "";
   let exited = false;
 
-  const readOutput = () => {
+  /** Reads what the run has printed; at its end, a last line with no newline counts too. */
+  const readOutput = ({ ended = false } = {}) => {
     const printed = stdoutReader.readNew();
     stdout += printed;
     stderr += stderrReader.readNew();
     const lines = (unparsed + printed).split("\n");
-    unparsed = lines.pop() ?? "";
+    unparsed = ended ? "" : (lines.pop() ?? "");
     for (const line of lines) {
       const event = parseJsonLine(line);
       if (event === undefined) continue;
@@ -136,26 +137,24 @@ export function launch({
 
   /** @type {Promise<RunOutcome>} */
   const outcome = new Promise((resolve, reject) => {
-    const finish = () => {
+    const finish = (reason) => {
       clearInterval(poll);
       exited = true;
-      readOutput();
+      readOutput({ ended: true });
       stdoutReader.close();
       stderrReader.close();
+      for (const waiter of waiters) {
+        waiter.reject(new Error(`${reason} before the awaited output.\n${stderr}`));
+      }
+      waiters.clear();
     };
     // A process that could not be started reports an error and never an exit.
     child.once("error", (error) => {
-      finish();
+      finish(`zcode could not start (${error.message})`);
       reject(error);
     });
     child.once("exit", (exitCode, signal) => {
-      finish();
-      for (const waiter of waiters) {
-        waiter.reject(
-          new Error(`zcode exited (${exitCode ?? signal}) before the awaited output.\n${stderr}`),
-        );
-      }
-      waiters.clear();
+      finish(`zcode exited (${exitCode ?? signal})`);
       resolve({
         exitCode,
         signal,
@@ -169,6 +168,13 @@ export function launch({
       });
     });
   });
+
+  // Whoever awaits the outcome is told the run could not start; dispose() need not be.
+  const dispose = async () => {
+    if (child.pid !== undefined) await endProcessTree(child.pid);
+    await outcome.catch(() => {});
+  };
+  trackZcode({ home, ended: outcome, account: () => stderr, dispose });
 
   return {
     pid: /** @type {number} */ (child.pid),
@@ -184,15 +190,7 @@ export function launch({
       child.kill(signal);
       return outcome;
     },
-    dispose: async () => {
-      try {
-        process.kill(-(/** @type {number} */ (child.pid)), KILL_SIGNAL);
-      } catch (error) {
-        // ESRCH: the whole group is already gone, which is the state dispose() wants.
-        if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ESRCH") throw error;
-      }
-      await outcome;
-    },
+    dispose,
   };
 }
 

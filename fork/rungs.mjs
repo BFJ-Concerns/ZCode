@@ -6,7 +6,9 @@
  *   node fork/rungs.mjs model-listings     the rung files whose path contains the text
  *   node fork/rungs.mjs --no-build ...     against the build already in place
  *
- * Exits 0 when every rung passes.
+ * Exits 0 when every rung passes. A test that is skipped, or marked to do, has not
+ * passed: a rung that cannot exercise its behaviour where it runs skips with the
+ * reason, and its file fails.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -46,6 +48,16 @@ async function rungFiles() {
     .sort();
 }
 
+/** Colour and other terminal controls, which the reporter adds when colour is forced. */
+// oxlint-disable-next-line no-control-regex -- the controls begin with ESC
+const TERMINAL_CONTROLS = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
+/** What the spec reporter counts in its closing summary, e.g. `ℹ skipped 1`. */
+const summaryCount = (output, label) =>
+  Number(
+    new RegExp(`^ℹ ${label} (\\d+)$`, "m").exec(output.replace(TERMINAL_CONTROLS, ""))?.[1] ?? 0,
+  );
+
 /** Runs one rung file in its own sandbox; resolves with its output and whether it passed. */
 function runSandboxed(file) {
   return new Promise((resolve) => {
@@ -77,7 +89,11 @@ function runSandboxed(file) {
     sandbox.stdout.on("data", (chunk) => (output += chunk));
     sandbox.stderr.on("data", (chunk) => (output += chunk));
     sandbox.once("error", (error) => resolve({ file, passed: false, output: `${error}\n` }));
-    sandbox.once("close", (exitCode) => resolve({ file, passed: exitCode === 0, output }));
+    sandbox.once("close", (exitCode) => {
+      const unexercised = summaryCount(output, "skipped") + summaryCount(output, "todo");
+      if (unexercised > 0) output += `\nNot passed: ${unexercised} tests skipped or left to do.\n`;
+      resolve({ file, passed: exitCode === 0 && unexercised === 0, output });
+    });
   });
 }
 

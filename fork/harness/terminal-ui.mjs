@@ -1,6 +1,6 @@
 /**
  * Drives the built `zcode` terminal UI as its owner uses it: in a terminal of its own,
- * typing a prompt, reading what the screen shows, and leaving with Ctrl-C twice.
+ * typing a prompt, reading what the screen shows, and leaving with Ctrl-C.
  *
  * The terminal is a pseudo-terminal from util-linux's `script`, which the sandbox
  * already requires (its `unshare` and `mount` come from the same package). What the UI
@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { ZCODE_ENTRY } from "./launcher.mjs";
 import { requireSandbox } from "./network-sandbox.mjs";
+import { endProcessTree, trackZcode } from "./zcode-processes.mjs";
 
 const COLUMNS = 120;
 const ROWS = 40;
@@ -20,7 +21,12 @@ const ENTER = "\r";
 const CTRL_C = "\x03";
 /** The input's placeholder: once the UI shows it, it is reading what is typed. */
 const READY_TEXT = "Type a prompt";
-const KILL_SIGNAL = "SIGKILL";
+/**
+ * Time between the Ctrl-C presses `quit()` makes. Far enough apart that the UI reads
+ * each as a press of its own, and well inside the two seconds in which a second press
+ * confirms the first.
+ */
+const CTRL_C_INTERVAL_MS = 250;
 
 /**
  * @typedef {object} TerminalUiExit
@@ -32,14 +38,19 @@ const KILL_SIGNAL = "SIGKILL";
  * @property {() => string} screen   The screen now, one line per row.
  * @property {(text: string) => Promise<void>} shows
  *   Settles once `text` is on the screen. Rejects if the UI exits first.
+ * @property {(text: string) => Promise<void>} type
+ *   Once the UI reads its input, types `text` without pressing Enter.
  * @property {(prompt: string) => Promise<void>} submit
  *   Once the UI reads its input, types the prompt, waits for it to be on the screen,
  *   and presses Enter.
  * @property {() => Promise<TerminalUiExit>} quit
- *   Leaves the UI with Ctrl-C twice, as the owner does, and waits for it to exit.
+ *   Leaves the UI with Ctrl-C, as the owner does, and waits for it to exit. Whatever
+ *   the UI shows, a picker or a draft included, it presses again until the UI exits:
+ *   a press closes the picker or clears the draft, and two in a row leave.
  * @property {() => boolean} running
  * @property {() => Promise<void>} dispose
- *   Kills the UI and everything it started. Call it when the rung is over.
+ *   Kills the UI, `zcode` and everything it started, and waits until they are gone.
+ *   Call it when the rung is over.
  */
 
 /**
@@ -55,8 +66,10 @@ export function openTerminalUi({ home, cwd = home.workspace, args = [] }) {
     throw new Error(`${ZCODE_ENTRY} is not built; run \`node fork/build.mjs\` first.`);
   }
 
+  // -isig: the UI reads Ctrl-C as a key in raw mode, and restores these settings as it
+  // leaves; a press that arrives as it leaves must stay a key, not interrupt it.
   const command = [
-    `stty cols ${COLUMNS} rows ${ROWS}`,
+    `stty cols ${COLUMNS} rows ${ROWS} -isig`,
     `exec ${[process.execPath, ZCODE_ENTRY, "--cwd", cwd, ...args].map(shellQuote).join(" ")}`,
   ].join("; ");
   // -q: no start and end banners; -f: flush as it is drawn; -e: exit as zcode exits.
@@ -65,9 +78,11 @@ export function openTerminalUi({ home, cwd = home.workspace, args = [] }) {
     // English, so that what the UI shows is the text this driver and the rungs look for.
     env: { ...home.env, TERM: "xterm-256color", LANG: "en_US.UTF-8" },
     stdio: ["pipe", "pipe", "pipe"],
-    // Its own process group, so dispose() can reach what the UI started.
+    // Its own process group, so dispose() can find what the UI started.
     detached: true,
   });
+  // A press written as the UI exits finds the terminal already closed.
+  child.stdin.on("error", () => {});
 
   const terminal = createScreen(ROWS, COLUMNS);
   let exited = false;
@@ -84,25 +99,38 @@ export function openTerminalUi({ home, cwd = home.workspace, args = [] }) {
   child.stdout.setEncoding("utf8").on("data", onOutput);
   child.stderr.setEncoding("utf8").on("data", onOutput);
 
+  const failWaiters = (reason) => {
+    exited = true;
+    for (const waiter of waiters) {
+      waiter.reject(new Error(`${reason} before showing "${waiter.text}".\n${terminal.text()}`));
+    }
+    waiters.clear();
+  };
+
   /** @type {Promise<TerminalUiExit>} */
   const exit = new Promise((resolve, reject) => {
-    child.once("error", reject);
+    // A terminal that could not be started reports an error and never an exit.
+    child.once("error", (error) => {
+      failWaiters(`The terminal UI could not start (${error.message})`);
+      reject(error);
+    });
     child.once("exit", (exitCode, signal) => {
-      exited = true;
-      const screen = terminal.text();
-      for (const waiter of waiters) {
-        waiter.reject(
-          new Error(`The terminal UI exited before showing "${waiter.text}".\n${screen}`),
-        );
-      }
-      waiters.clear();
-      resolve({ exitCode, signal, screen });
+      failWaiters(`The terminal UI exited (${exitCode ?? signal})`);
+      resolve({ exitCode, signal, screen: terminal.text() });
     });
   });
+  // Reported to whoever waits on the UI; one that is never waited on has nothing to report it to.
+  exit.catch(() => {});
+
+  const dispose = async () => {
+    if (child.pid !== undefined) await endProcessTree(child.pid);
+    await exit.catch(() => {});
+  };
+  trackZcode({ home, ended: exit, account: () => terminal.text(), dispose });
 
   const shows = (text) => {
     if (terminal.text().includes(text)) return Promise.resolve();
-    if (exited) return Promise.reject(new Error(`The terminal UI has exited.\n${terminal.text()}`));
+    if (exited) return Promise.reject(new Error(`The terminal UI has ended.\n${terminal.text()}`));
     return new Promise((resolve, reject) => waiters.add({ text, resolve, reject }));
   };
 
@@ -112,32 +140,36 @@ export function openTerminalUi({ home, cwd = home.workspace, args = [] }) {
   // Reported to whoever submits; a UI that is never typed into has nothing to report it to.
   ready.catch(() => {});
 
+  const type = async (text) => {
+    await ready;
+    child.stdin.write(text);
+  };
+
   return {
     screen: () => terminal.text(),
     shows,
+    type,
     submit: async (prompt) => {
-      await ready;
-      child.stdin.write(prompt);
+      await type(prompt);
       await shows(prompt);
       child.stdin.write(ENTER);
     },
     quit: async () => {
-      // The second press confirms the first if it comes within two seconds; the prompt
-      // the first one sets is not always drawn, so there is nothing to wait for between.
-      child.stdin.write(CTRL_C);
-      child.stdin.write(CTRL_C);
-      return await exit;
+      // Two presses written at once can be read as one, and what a press does depends
+      // on what the UI shows, so the presses are paced and go on until the UI exits.
+      const press = () => {
+        if (!exited) child.stdin.write(CTRL_C);
+      };
+      press();
+      const pressing = setInterval(press, CTRL_C_INTERVAL_MS);
+      try {
+        return await exit;
+      } finally {
+        clearInterval(pressing);
+      }
     },
     running: () => !exited,
-    dispose: async () => {
-      try {
-        process.kill(-(/** @type {number} */ (child.pid)), KILL_SIGNAL);
-      } catch (error) {
-        // ESRCH: the whole group is already gone, which is the state dispose() wants.
-        if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ESRCH") throw error;
-      }
-      await exit;
-    },
+    dispose,
   };
 }
 

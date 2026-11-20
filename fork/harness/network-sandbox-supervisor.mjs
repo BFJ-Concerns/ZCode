@@ -106,20 +106,27 @@ function resolverConfigTarget() {
   }
 }
 
-/** Names in the order first asked for, each with the address it was given. */
-const namesAsked = new Map();
+/**
+ * The address each name was given, for as long as the sandbox lives. Forgetting the
+ * record keeps these, so a connection made late to an address looked up earlier is
+ * still recorded under the name that was looked up, never under a later one.
+ */
+const addresses = new Map();
+/** Names asked for since the record was last forgotten, in the order first asked. */
+const namesAsked = new Set();
 /** Names a rung has pointed at a stand-in. */
 const standInNames = new Map();
 
 function addressFor(name) {
   const standIn = standInNames.get(name);
   if (standIn !== undefined) return standIn;
-  if (!namesAsked.has(name)) {
-    const index = namesAsked.size + 1;
+  namesAsked.add(name);
+  if (!addresses.has(name)) {
+    const index = addresses.size + 1;
     if (index > ELSEWHERE_CAPACITY) throw new Error("The sandbox has run out of addresses.");
-    namesAsked.set(name, [...ELSEWHERE_PREFIX, index >> 8, index & 0xff].join("."));
+    addresses.set(name, [...ELSEWHERE_PREFIX, index >> 8, index & 0xff].join("."));
   }
-  return namesAsked.get(name);
+  return addresses.get(name);
 }
 
 function startNameServer() {
@@ -171,7 +178,7 @@ function startNameServer() {
 }
 
 function recordedConnections() {
-  const namesByAddress = new Map([...namesAsked].map(([name, address]) => [address, name]));
+  const namesByAddress = new Map([...addresses].map(([name, address]) => [address, name]));
   const listing = JSON.parse(run("nft", ["-j", "list", "table", "inet", FILTER_TABLE]));
   const connections = [];
   for (const { set, protocol } of RECORD_SETS) {
@@ -187,12 +194,13 @@ function recordedConnections() {
 
 function forgetAttempts() {
   namesAsked.clear();
+  standInNames.clear();
   for (const { set } of RECORD_SETS) run("nft", ["flush", "set", "inet", FILTER_TABLE, set]);
 }
 
 function startControlServer() {
   const routes = {
-    "GET /attempts": () => ({ names: [...namesAsked.keys()], connections: recordedConnections() }),
+    "GET /attempts": () => ({ names: [...namesAsked], connections: recordedConnections() }),
     "POST /forget": () => forgetAttempts(),
     "POST /stand-in-name": ({ name, address }) => {
       standInNames.set(name.toLowerCase(), address);
