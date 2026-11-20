@@ -117,7 +117,7 @@ test("CLIProxyAPI registry levels take precedence over supported parameters, whi
         {
           id: "gateway-explicit-levels",
           thinking: { levels: ["low", "xhigh"] },
-          supported_parameters: ["max_tokens"],
+          supported_parameters: ["max_tokens", "reasoning_effort"],
         },
         {
           id: "gateway-empty-levels",
