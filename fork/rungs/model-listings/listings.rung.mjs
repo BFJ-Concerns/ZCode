@@ -7,10 +7,18 @@
  */
 
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
 import { launch } from "../../harness/launcher.mjs";
-import { hang, say, startModelProvider } from "../../harness/model-provider.mjs";
+import {
+  asksForSessionTitle,
+  hang,
+  say,
+  startModelProvider,
+} from "../../harness/model-provider.mjs";
 import { createOwnerHome, providerConfiguration } from "../../harness/owner-home.mjs";
+import { openTerminalUi } from "../../harness/terminal-ui.mjs";
 import { cliProxyApiCatalogue, openRouterListing } from "./listings.mjs";
 
 /** A stand-in serving `listing`, and a home whose configuration names only `modelIds`. */
@@ -104,7 +112,7 @@ test("served OpenRouter's listing, the command prints the window, output and lev
   assert.deepEqual(limitsOf(printed, "vendor/reasoner"), {
     contextWindow: 400_000,
     maxOutputTokens: 100_000,
-    reasoningLevels: ["low", "medium", "high"],
+    reasoningLevels: ["none", "minimal", "low", "high", "xhigh"],
   });
   assert.deepEqual(limitsOf(printed, "vendor/plain"), {
     contextWindow: 32_768,
@@ -329,7 +337,7 @@ for (const versionedBase of [true, false]) {
     assert.deepEqual(limitsOf(printed, "vendor/reasoner"), {
       contextWindow: 400_000,
       maxOutputTokens: 100_000,
-      reasoningLevels: ["low", "medium", "high"],
+      reasoningLevels: ["none", "minimal", "low", "high", "xhigh"],
     });
     const [listingRequest] = provider.requests;
     assert.equal(listingRequest.method, "GET");
@@ -386,4 +394,140 @@ test("a listed reasoning level reaches the model as that level, whatever a built
   assert.equal(request.body.model, "kimi-k2.6");
   assert.equal(request.body.reasoning_effort, "high");
   assert.notEqual(request.body.thinking?.type, "disabled");
+});
+
+test("a run reports the context window of a model only the listing names", async (t) => {
+  const { home } = await ownerWithListing(t, {
+    listing: cliProxyApiCatalogue,
+    modelIds: [],
+    defaultModelId: "gateway-coder",
+    reasoningLevel: "low",
+    script: [say("Window checked.", { inputTokens: 27_200 })],
+  });
+  const run = launch({ home, prompt: "Check the window." });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  const completion = outcome.events.find(
+    (event) =>
+      event.type === "session.updated" &&
+      event.payload?.querySource === "main_turn" &&
+      event.payload.content === "Window checked.",
+  );
+  assert.equal(completion?.payload.contextWindow, 272_000);
+  assert.equal(outcome.result.projection.contextWindow, 272_000);
+});
+
+test("the terminal footer uses the window of a model only the listing names", async (t) => {
+  const { home } = await ownerWithListing(t, {
+    listing: cliProxyApiCatalogue,
+    modelIds: [],
+    defaultModelId: "gateway-coder",
+    reasoningLevel: "low",
+    script: (request) =>
+      asksForSessionTitle(request)
+        ? say('{"title":"Window check"}')
+        : say("Window checked.", { inputTokens: 27_200 }),
+  });
+  const ui = openTerminalUi({ home });
+  t.after(() => ui.dispose());
+
+  await ui.submit("Check the window.");
+  await ui.shows("Window checked.");
+  // Wait for the usage figure so an incorrect percentage fails with the screen contents.
+  await ui.shows("27.2K");
+  assert.match(ui.screen(), /27\.2K \(10%\)/);
+});
+
+test("the terminal effort picker offers OpenRouter's explicitly listed levels", async (t) => {
+  const { home } = await ownerWithListing(t, {
+    listing: openRouterListing,
+    modelIds: [],
+    defaultModelId: "vendor/reasoner",
+    reasoningLevel: "low",
+  });
+  const ui = openTerminalUi({ home });
+  t.after(() => ui.dispose());
+
+  await ui.type("/effort");
+  await ui.shows("Effort");
+  const screen = ui.screen();
+  assert.match(screen, /\bnone\b/);
+  assert.match(screen, /\bminimal\b/);
+  assert.match(screen, /\bxhigh\b/);
+  assert.doesNotMatch(screen, /\bmedium\b/);
+});
+
+test("an invalid model override gives a config diagnostic and fails before listing models", async (t) => {
+  const { home, provider } = await ownerWithListing(t, {
+    listing: cliProxyApiCatalogue,
+    modelRules: [
+      {
+        providerId: "stand-in",
+        modelId: "gateway-coder",
+        config: { contextWindow: 50_000 },
+      },
+    ],
+  });
+  const run = launch({ home, command: ["models"] });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+
+  assert.equal(outcome.exitCode, 1);
+  assert.equal(outcome.stdout, "");
+  assert.match(outcome.stderr, /provider_config\.json/);
+  assert.match(outcome.stderr, /providerModelRules\[0\]\.config.*contextWindow/);
+  assert.deepEqual(provider.requests, []);
+});
+
+test("malformed provider JSON is diagnosed without echoing file contents", async (t) => {
+  const { home } = await ownerWithListing(t, {});
+  await writeFile(join(home.dir, ".zcode", "v2", "provider_config.json"), "fixture-secret");
+  const run = launch({ home, command: ["models"] });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+
+  assert.equal(outcome.exitCode, 1);
+  assert.equal(outcome.stdout, "");
+  assert.match(outcome.stderr, /provider_config\.json.*invalid JSON/);
+  assert.doesNotMatch(outcome.stderr, /fixture-secret/);
+});
+
+test("an enabled provider with no usable models makes the command fail", async (t) => {
+  const { home } = await ownerWithListing(t, { listing: { data: [] }, modelIds: [] });
+  const run = launch({ home, command: ["models"] });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+
+  assert.equal(outcome.exitCode, 1);
+  assert.match(outcome.stderr, /stand-in.*no usable models/);
+  assert.deepEqual(JSON.parse(outcome.stdout), {
+    models: [],
+    listings: [{ provider: "stand-in", status: "read", models: 0 }],
+  });
+});
+
+test("an empty provider fails even when another provider offers usable models", async (t) => {
+  const provider = await startModelProvider({ listing: { data: [] } });
+  t.after(() => provider.close());
+  const providerConfig = providerConfiguration({ baseUrl: provider.baseUrl });
+  const [available] = providerConfig.config.providerConfigRules.providerRules;
+  providerConfig.config.providerConfigRules.providerRules.push({
+    ...available,
+    providerId: "empty-provider",
+    config: { ...available.config, personalModelIds: [] },
+  });
+  const home = await createOwnerHome({ providerConfig });
+  t.after(() => home.remove());
+
+  const run = launch({ home, command: ["models"] });
+  t.after(() => run.dispose());
+  const outcome = await run.outcome;
+  assert.equal(outcome.exitCode, 1);
+  assert.match(outcome.stderr, /empty-provider.*no usable models/);
+  assert.deepEqual(
+    JSON.parse(outcome.stdout).models.map(({ provider }) => provider),
+    ["stand-in"],
+  );
 });

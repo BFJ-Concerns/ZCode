@@ -50,6 +50,7 @@ export const openRouterListing = {
         is_moderated: false,
       },
       supported_parameters: ["include_reasoning", "max_tokens", "reasoning", "tools"],
+      reasoning: { supported_efforts: ["xhigh", "high", "low", "minimal", "none"] },
     },
     { id: "openai/gpt-6-astra", supported_parameters: ["reasoning"] },
     { id: "openai/gpt-5.4", supported_parameters: ["reasoning"] },

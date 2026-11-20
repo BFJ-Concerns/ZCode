@@ -5,3 +5,4 @@ export {
   type ModelListingResult,
   type ModelListingSourceOptions,
 } from "./listing-source.js";
+export { describeRejectedProviderConfig } from "./config-diagnostic.js";

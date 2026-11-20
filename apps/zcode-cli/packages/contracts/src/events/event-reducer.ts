@@ -34,6 +34,8 @@ import type {
   StreamingToolLedgerPayload,
 } from "./stream-recovery.events.js";
 import { SessionEventType as EventTypes } from "./session.events.js";
+// fork(model-listings): project the current main turn’s model window
+import { mainTurnContextWindow } from "../fork/model-listings/index.js";
 import { getModelUsageContextTokens } from "../model/index.js";
 import { parseCheckpointCreatedPayload, parseRewindTriggeredPayload } from "../rewind/index.js";
 import {
@@ -224,6 +226,8 @@ export class EventReducer {
       return {
         ...p,
         ...(contextUsed !== undefined ? { contextUsed } : {}),
+        // fork(model-listings): keep the window with the usage the main turn reports
+        ...mainTurnContextWindow(payload),
         updatedAt: e.timestamp,
       };
     },

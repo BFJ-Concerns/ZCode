@@ -39,6 +39,8 @@ export * from "./interfaces/runtime-input-presentation.js";
 export * from "./events/session.events.js";
 export * from "./events/stream-recovery.events.js";
 export * from "./events/event-reducer.js";
+// fork(model-listings): the terminal can project the window from the same event
+export { mainTurnContextWindow } from "./fork/model-listings/index.js";
 export * from "./events/session-event-retention.js";
 export * from "./events/in-memory-session-event-store.js";
 

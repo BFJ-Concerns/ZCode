@@ -10,6 +10,8 @@ import {
   NodeModelSelectionConfigRepository,
   NodeProviderRegistryRuntime,
   resolveNodeProviderRuntimePaths,
+  // fork(model-listings): pass on the personal configuration recovery signal
+  type PersonalProviderConfigRecoveryEvent,
   ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE_ENV,
   type ZCodeBuiltinRefreshEvent,
 } from "@zcode/provider-node";
@@ -22,6 +24,8 @@ import {
 } from "./standalone-account-provider-runtime.js";
 
 export interface ProcessProviderRegistryRuntimeOptions {
+  // fork(model-listings): callers can observe rejected personal provider configuration
+  readonly onPersonalConfigRecovery?: (event: PersonalProviderConfigRecoveryEvent) => void;
   /** Standalone Prompt CLI / TUI 自己拥有账号凭据与旧配置的一次性导入。 */
   readonly standalone?: {
     readonly credentialStore?: SharedZCodeCredentialStore;
@@ -51,6 +55,8 @@ export async function startProcessProviderRegistryRuntime(
     : undefined;
   const runtime = new NodeProviderRegistryRuntime({
     ...paths,
+    // fork(model-listings): let the models command diagnose the file the registry rejected
+    onPersonalConfigRecovery: options.onPersonalConfigRecovery,
     ...(bundledFile
       ? {
           zcodeBuiltinFilePath: bundledFile,
