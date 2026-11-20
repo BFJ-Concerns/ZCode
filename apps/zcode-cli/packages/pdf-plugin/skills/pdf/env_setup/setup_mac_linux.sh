@@ -269,9 +269,10 @@ else
 fi
 echo ""
 
-# ── Step 2i: Font Installation (from CDN) ──
+# ── Step 2i: Font Installation (from a configured mirror) ──
 echo "--- [9/10] Font Installation ---"
-FONT_CDN_BASE="https://z-cdn.chatglm.cn/office-skill/fonts"
+# fork(zai-silence): fonts download only from a mirror the owner names, never from Z.ai's CDN
+FONT_CDN_BASE="${ZCODE_FONT_SOURCE_URL:-}"
 FONT_LIST="$SCRIPT_DIR/font_list.txt"
 
 if [ "$PLATFORM" = "mac" ]; then
@@ -282,7 +283,10 @@ fi
 mkdir -p "$USER_FONT_DIR"
 
 MARKER="$USER_FONT_DIR/.office-skill-fonts-installed"
-if [ -f "$MARKER" ]; then
+# fork(zai-silence): with no mirror named, the fonts already installed are the ones used
+if [ -z "$FONT_CDN_BASE" ]; then
+    warn "No font mirror named: using installed fonts. Install those in $FONT_LIST with your package manager, or set ZCODE_FONT_SOURCE_URL to a mirror of that layout."
+elif [ -f "$MARKER" ]; then
     ok "Fonts already installed (marker found). To re-install, delete $MARKER"
 else
     if [ ! -f "$FONT_LIST" ]; then
@@ -293,7 +297,7 @@ else
         INSTALLED=0
         SKIPPED=0
         FAILED=0
-        info "Downloading $TOTAL fonts from CDN..."
+        info "Downloading $TOTAL fonts from the configured mirror..."
         
         while IFS= read -r rel_path || [ -n "$rel_path" ]; do
             [ -z "$rel_path" ] && continue
@@ -331,7 +335,7 @@ else
     fi
 fi
 
-# Set FONT_DIR to user font directory (fonts are now installed there)
+# Set FONT_DIR to user font directory
 FONT_DIR="$USER_FONT_DIR"
 export FONT_DIR
 echo ""
@@ -357,7 +361,7 @@ elif [ "$PLATFORM" = "linux" ]; then
 fi
 
 if [ "$CJK_FOUND" = false ]; then
-    warn "No CJK font detected — fonts were downloaded and copied; rebuild font cache if needed"
+    warn "No CJK font detected. Check the installed fonts and rebuild the font cache if needed."
 fi
 echo ""
 

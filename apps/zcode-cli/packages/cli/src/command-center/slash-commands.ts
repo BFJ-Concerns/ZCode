@@ -121,23 +121,7 @@ export function parseSlashCommand(input: string): SlashCommand | null {
     };
   }
 
-  if (rawName === "login") {
-    return {
-      args,
-      name: "login",
-      rawName,
-      type: "known",
-    };
-  }
-
-  if (rawName === "logout") {
-    return {
-      args,
-      name: "logout",
-      rawName,
-      type: "known",
-    };
-  }
+  // fork(zai-silence): /login and /logout are not commands; there is no Z.ai account to sign in to
 
   if (rawName === "locale" || rawName === "language") {
     return {

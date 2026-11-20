@@ -10,6 +10,7 @@ import {
   SUPPORTED_LOCALES,
 } from "./locale.js";
 import type { ZCodeCopy } from "./types.js";
+import { withoutSignIn } from "./fork/zai-silence/index.js";
 
 export {
   DEFAULT_LOCALE,
@@ -23,8 +24,10 @@ export type { LocaleDetectionInput } from "./locale.js";
 export type { CliCopy, TuiCopy, UiLocale, SupportedLocale, ZCodeCopy } from "./types.js";
 
 const CATALOGS: Record<SupportedLocale, ZCodeCopy> = {
-  "en-US": enUS,
-  "zh-CN": zhCN,
+  // fork(zai-silence): no copy offers to sign in to a Z.ai account
+  "en-US": withoutSignIn("en-US", enUS),
+  // fork(zai-silence): no copy offers to sign in to a Z.ai account
+  "zh-CN": withoutSignIn("zh-CN", zhCN),
 };
 
 export function getZCodeCopy(locale?: UiLocale | string, detected?: string | null): ZCodeCopy {
