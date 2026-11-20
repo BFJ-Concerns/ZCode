@@ -235,7 +235,7 @@ follow.
 ## Bringing in an upstream release
 
 `main` holds upstream's releases exactly as published, and `fork` is the release it is
-built on plus one commit for each difference. To bring in a newer release, run this
+built on plus the commits of its differences. To bring in a newer release, run this
 from a checkout of the fork:
 
 ```sh
@@ -248,23 +248,33 @@ differences there one at a time, in the fork's order, and runs both gates after 
 one. The first difference that conflicts with the release or fails a gate is therefore
 the one the release broke.
 
-- **Every difference replayed and proven:** `fork` moves to the result and the worktree
-  and its branch are removed. If `fork` is checked out somewhere, it is left alone and
-  the result waits on the branch.
+- **Every difference replayed and proven:** `fork` moves to the result, and the worktree
+  and its branch are removed. Where `fork` is checked out, its checkout moves with it,
+  keeping changes no commit holds in files the release leaves alone.
+- **Proven, but `fork` cannot move:** the result waits on the branch, and the account
+  gives the command that finishes the job. If `fork`'s checkout holds changes the move
+  would overwrite, put them aside and run the same command again; it moves `fork`
+  without gating again. If `fork` moved while the release was being brought in, it is
+  left as it is, because the replay lacks its new commits, and the account gives the
+  command that starts again from it.
 - **A difference broken:** the process stops there. `fork` stays where it was, and the
   worktree holds the replay as far as it got. A conflicting difference is left mid
   cherry-pick; a difference that failed a gate is the branch's last commit, and the
-  gates' output is in the log the account names.
+  gates' output is in the log the account names. Files the gates left in the worktree
+  are named in the account and cleared away.
 
 Either way the process prints an account of the release for the owner: what it did to
-each difference, what was proven at each step, what it changed in the packages the
-command line builds from, and which changed packages hold none of the fork's code or
-joins. `--account <file>` also writes the account to a file.
+each difference, including which of its changes the release already makes, what was
+proven at each step, what it changed in the packages the command line builds from, and
+which changed packages hold none of the fork's code or joins. `--account <file>` also writes the account to a file.
 
 The process tells differences apart by their names (see [Differences](#differences)).
 A later commit that carries only names an earlier difference holds is a repair of that
-difference, and is folded into its commit as the release is brought in. A commit that
-carries no name belongs to `base`. A commit is the unit of a difference, so one that
+difference, and is folded into its commit as the release is brought in. A repair made on
+top of a later difference does not apply without it, so it is replayed as a step of its
+own directly after that difference, and the account names it after both. A repair to
+`base` that changes a harness file or README lines a difference brought is one of these.
+A commit that carries no name belongs to `base`. A commit is the unit of a difference, so one that
 brings in several new names is one difference carrying them all, and the account
 labels it with each. A later commit that changes two differences together cannot be
 attributed to either, so the process stops before replaying anything and names the

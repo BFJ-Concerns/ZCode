@@ -1,10 +1,13 @@
 /**
  * Brings an upstream release into the fork. The fork's differences are replayed onto the
  * release one at a time, and each step must pass the gates before the next is replayed,
- * so the first difference the release breaks is the one named. The process ends in one
- * of two ways. Either every difference is replayed and proven and the fork's branch moves
- * to the result, or the replay stops at the broken difference and the fork stays where it
- * was. Either way it prints an account of what the release did to each difference.
+ * so the first difference the release breaks is the one named. Either every difference
+ * is replayed and proven and the fork's branch moves to the result, its checkout with it
+ * where it is checked out, or the replay stops at the broken difference and the fork
+ * stays where it was. When the result is proven but the fork cannot move (it moved
+ * meanwhile, or its checkout holds changes the move would overwrite), the result waits
+ * on a branch and the account gives the command that finishes the job. Either way it
+ * prints an account of what the release did to each difference.
  *
  *   node fork/bring-in-release.mjs <release> [options]
  *
@@ -21,13 +24,16 @@
  * `src/fork/<name>/` directory, a `fork/rungs/<name>/` directory, or a `fork(<name>): `
  * join marker in a file upstream ships (fork/README.md); text in the fork's own files is
  * never read as a marker. A commit is the unit of a difference: one that brings in new
- * names is one difference carrying them all. A commit whose names all belong to a difference already
- * on the fork is a repair of that difference, and is folded into its commit on the way,
- * so that the fork on the release is the release plus one commit for each difference.
+ * names is one difference carrying them all. A commit whose names all belong to a
+ * difference already on the fork is a repair of that difference, and is folded into its
+ * commit on the way, so that the fork on the release is the release plus one commit for
+ * each difference. A repair made on top of a later difference, which does not apply
+ * without it, is instead replayed as a step of its own directly after that difference.
  * A commit that names nothing else belongs to the fork's ground, `base`.
  *
  * After a stop, the worktree is left as the replay reached it: a conflicting difference
- * is mid cherry-pick, and a difference whose gates failed is its last commit. Rework it
+ * is mid cherry-pick, and a difference whose gates failed is its last commit. Files the
+ * gates left behind are named in the account and cleared away. Rework the difference
  * there (resolve and `git cherry-pick --continue`, or amend), then run the same command
  * again: it gates what was reworked and carries on from the next difference.
  *
@@ -37,7 +43,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 const DEFAULT_GATES = ["node fork/check.mjs", "node fork/rungs.mjs"];
@@ -63,6 +69,9 @@ function git(args, { cwd = process.cwd(), allowFailure = false } = {}) {
 const lines = (text) => text.split("\n").filter(Boolean);
 const short = (sha) => sha.slice(0, 8);
 const code = (text) => `\`${text}\``;
+/** A word as a POSIX shell reads it back unchanged. */
+const shellWord = (word) =>
+  /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
 
 // ---------------------------------------------------------------------------------------
 // The fork's differences
@@ -208,33 +217,111 @@ function cherryPick(worktree, commits) {
   return conflicts;
 }
 
-/** The difference as one commit on the base: its first commit, its repairs folded in. */
-function foldIntoOne(worktree, difference) {
-  const [first, ...repairs] = difference.commits;
-  if (cherryPick(worktree, [first.sha]).length > 0) {
-    throw new Stop(
-      `${difference.label} does not apply on the fork's upstream base without the ` +
-        "differences after it, so the fork cannot be replayed one difference at a time.",
-    );
+/**
+ * Puts one of the fork's commits on top of the worktree's checkout: the commit itself when
+ * it already sits there, a cherry-pick of it otherwise. Leaves the checkout as it was and
+ * answers false when it does not apply.
+ */
+function pick(worktree, commit) {
+  if (git(["rev-parse", `${commit.sha}^`]) === HEAD(worktree)) {
+    git(["checkout", "--quiet", "--detach", commit.sha], { cwd: worktree });
+    return true;
   }
-  if (repairs.length === 0) return;
-  const picked = git(["cherry-pick", "--no-commit", ...repairs.map((c) => c.sha)], {
-    cwd: worktree,
-    allowFailure: true,
-  });
-  if (picked.status !== 0) {
-    throw new Stop(
-      `The repairs to ${difference.label} do not apply directly after its first commit, ` +
-        `${short(first.sha)}; they lean on a later difference. Move what they need into ` +
-        "the difference itself, then run this again.",
-    );
-  }
-  const message = difference.commits
+  const picked = git(
+    // --keep-redundant-commits is --empty=keep under the name Git before 2.45 knows.
+    ["cherry-pick", "--allow-empty", "--keep-redundant-commits", commit.sha],
+    { cwd: worktree, allowFailure: true },
+  );
+  if (picked.status === 0) return true;
+  if (cherryPickInProgress(worktree)) git(["cherry-pick", "--abort"], { cwd: worktree });
+  return false;
+}
+
+/** Makes the checkout's last `count` commits one, under the messages of `commits`. */
+function squash(worktree, count, commits) {
+  if (count < 2) return;
+  const message = commits
     .map((commit) => git(["log", "-1", "--format=%B", commit.sha]).trim())
     .join("\n\n");
-  git(["commit", "--no-verify", "--allow-empty", "--amend", "--message", message], {
+  git(["reset", "--quiet", "--soft", `HEAD~${count - 1}`], { cwd: worktree });
+  git(["commit", "--quiet", "--no-verify", "--allow-empty", "--amend", "--message", message], {
     cwd: worktree,
   });
+}
+
+/**
+ * Lays the fork out on its upstream base as the steps it is replayed in, one commit each.
+ * Each difference is a step, its repairs folded in. A repair that does not apply directly
+ * after its difference was made on top of a later one, so it becomes a step of its own
+ * placed directly after the first difference it applies after, and the repairs made to
+ * its difference after it wait with it. The ground's repairs are no different: one that
+ * changes a file a later difference brought follows that difference.
+ */
+function layOut(worktree, differences) {
+  const steps = [];
+  /** Repairs not yet placed, in the order they were made. */
+  const waiting = [];
+  /** Whether a repair to `difference` waits among the first `count` repairs waiting. */
+  const repairWaits = (difference, count = waiting.length) =>
+    waiting.slice(0, count).some((repair) => repair.difference === difference);
+  /** Places a repair as the last step, joining that step when it is the same difference's. */
+  const placeRepair = (repair, follows) => {
+    const last = steps.at(-1);
+    if (last.follows === follows && last.label === repair.difference.label) {
+      last.commits.push(repair.commit);
+      squash(worktree, 2, last.commits);
+      last.replay = HEAD(worktree);
+    } else {
+      steps.push({
+        label: repair.difference.label,
+        follows,
+        alsoEdits: [],
+        commits: [repair.commit],
+        replay: HEAD(worktree),
+      });
+    }
+  };
+  for (const difference of differences) {
+    const [first, ...repairs] = difference.commits;
+    if (!pick(worktree, first)) {
+      throw new Stop(
+        `${difference.label} does not apply on the fork's upstream base without the ` +
+          "differences after it, so the fork cannot be replayed one difference at a time.",
+      );
+    }
+    const folded = [first];
+    for (const commit of repairs) {
+      const repair = { difference, commit };
+      if (!repairWaits(difference) && pick(worktree, commit)) folded.push(commit);
+      else waiting.push(repair);
+    }
+    squash(worktree, folded.length, folded);
+    steps.push({
+      label: difference.label,
+      alsoEdits: difference.alsoEdits,
+      commits: folded,
+      replay: HEAD(worktree),
+    });
+    // A repair placed leaves the list, so the next one waiting takes its index.
+    for (let index = 0; index < waiting.length; ) {
+      const repair = waiting[index];
+      if (!repairWaits(repair.difference, index) && pick(worktree, repair.commit)) {
+        waiting.splice(index, 1);
+        placeRepair(repair, difference.label);
+      } else {
+        index += 1;
+      }
+    }
+  }
+  if (waiting.length > 0) {
+    const [{ difference, commit }] = waiting;
+    throw new Stop(
+      `${short(commit.sha)} (${commit.subject}), a repair to ${difference.label}, applies ` +
+        "after none of the fork's differences, so the fork cannot be replayed one " +
+        "difference at a time.",
+    );
+  }
+  return steps;
 }
 
 /** Runs the gates at the worktree's checkout; resolves with what they proved. */
@@ -266,11 +353,11 @@ function runGates(worktree, gates, logFile) {
 // ---------------------------------------------------------------------------------------
 // The account
 
-/** The upstream files a difference edits, and what the release did to each. */
-function joinedFilesTouched(state, difference) {
+/** The upstream files a step edits, and what the release did to each. */
+function joinedFilesTouched(state, step) {
   const byPath = new Map(state.changes.map((change) => [change.from, change]));
   const touched = [];
-  for (const path of difference.edits) {
+  for (const path of step.edits) {
     const change = byPath.get(path);
     if (!change) continue;
     if (change.status === "R") touched.push(`${code(path)} renamed to ${code(change.to)}`);
@@ -300,12 +387,25 @@ function proofText(proof) {
   return `${proof.passed.map(code).join(" and ")} passed${rungs}`;
 }
 
-function differenceLine(state, difference) {
-  const step = difference.step;
+const bold = (text) => `**${text}**`;
+
+const repairs = (n) => `${n} repair${n > 1 ? "s" : ""}`;
+
+/**
+ * A step as the account names it: a difference, or repairs to a difference that were
+ * made on a later one and are replayed after it.
+ */
+function stepName(step, mark = (text) => text) {
+  if (!step.follows) return mark(step.label);
+  const made = step.commits.length > 1 ? repairs(step.commits.length) : "repair";
+  return `${mark(step.label)}, its ${made} made on ${mark(step.follows)}`;
+}
+
+function stepLine(state, step) {
   const parts = [];
-  const folded = difference.commits.length - 1;
-  const name = `**${difference.label}**${folded > 0 ? ` (${folded} repair${folded > 1 ? "s" : ""} folded in)` : ""}`;
-  const touched = joinedFilesTouched(state, difference);
+  const folded = step.follows ? 0 : step.commits.length - 1;
+  const name = `${stepName(step, bold)}${folded > 0 ? ` (${repairs(folded)} folded in)` : ""}`;
+  const touched = joinedFilesTouched(state, step);
   if (step.status === "pending") return `- ${name}: not reached.`;
   if (step.conflicts.length > 0) {
     parts.push(`conflicted in ${listed(step.conflicts.map(code))}`);
@@ -318,11 +418,14 @@ function differenceLine(state, difference) {
   if (step.conflicts.length > 0 && touched.length > 0) {
     parts.push(`the release changed ${listed(touched)}`);
   }
-  if (step.empty) parts.push("its commit is empty: the release already makes every change it made");
+  if (step.empty) {
+    parts.push("its commit is empty: the release already makes every change it made");
+  } else if (step.provided?.length > 0) {
+    parts.push(`the release already makes its changes to ${listed(step.provided.map(code))}`);
+  }
   if (step.reworked && step.status !== "conflicted") parts.push("reworked");
   if (step.proof) parts.push(proofText(step.proof));
-  if (difference.alsoEdits.length > 0)
-    parts.push(`it also edits ${difference.alsoEdits.join(", ")}`);
+  if (step.alsoEdits.length > 0) parts.push(`it also edits ${step.alsoEdits.join(", ")}`);
   return `- ${name}: ${parts.join("; ")}.`;
 }
 
@@ -337,22 +440,31 @@ function packageOf(path, packages) {
 function account(state) {
   const { release, base, fork } = state;
   const out = [];
-  const differences = state.differences ?? [];
-  const stoppedAt = differences.find(
-    (d) => d.step.status === "conflicted" || d.step.status === "failed",
-  );
-  if (state.outcome === "moved" || state.outcome === "ready") {
-    out.push(`# Upstream ${release.label} brought into the fork`, "");
+  const steps = state.steps ?? [];
+  const stoppedAt = steps.find((step) => step.status === "conflicted" || step.status === "failed");
+  if (state.outcome === "moved") {
+    const withCheckout = state.checkout
+      ? `, and its checkout in ${code(state.checkout)} with it`
+      : "";
     out.push(
-      state.outcome === "moved"
-        ? `${code(fork.branch)} moved from upstream ${base.label} to ${release.label}: it is now ${short(state.head)}, and was ${short(fork.tip)}. ` +
-            `Publish it with ${code(`git push --force-with-lease=${fork.branch}:${fork.tip} origin ${fork.branch}`)}.`
-        : `The fork on ${release.label} is ready on ${code(state.intakeBranch)} at ${short(state.head)}. ` +
-            `${code(fork.branch)} stays at ${short(fork.tip)}: ${state.notMovedBecause}`,
+      `# Upstream ${release.label} brought into the fork`,
+      "",
+      `${code(fork.branch)} moved from upstream ${base.label} to ${release.label}${withCheckout}: ` +
+        `it is now ${short(state.head)}, and was ${short(fork.tip)}. ` +
+        `Publish it with ${code(`git push --force-with-lease=${fork.branch}:${fork.tip} origin ${fork.branch}`)}.`,
+    );
+  } else if (state.outcome === "ready") {
+    out.push(
+      `# Upstream ${release.label} brought in, waiting to move the fork`,
+      "",
+      `The fork on ${release.label} is ready on ${code(state.intakeBranch)} at ${short(state.head)}. ` +
+        `${code(fork.branch)} stays at ${short(fork.tip)}: ${state.notMovedBecause}`,
     );
   } else {
     out.push(`# Upstream ${release.label} not brought in`, "");
-    const where = stoppedAt ? `at **${stoppedAt.label}**` : "before any difference was replayed";
+    const where = stoppedAt
+      ? `at ${stepName(stoppedAt, bold)}`
+      : "before any difference was replayed";
     out.push(
       `Stopped ${where}. ${state.stopReason ?? ""}`.trim(),
       "",
@@ -360,13 +472,13 @@ function account(state) {
         (stoppedAt
           ? ` The replay so far is on ${code(state.intakeBranch)} in ${code(state.worktree)}; ` +
             `the gates' output is in ${code(state.gateLog)}. Rework the difference there and ` +
-            "run the same command again."
+            `run ${code(rerunCommand())} again.`
           : ""),
     );
   }
-  if (differences.length > 0) {
+  if (steps.length > 0) {
     out.push("", "## The differences", "");
-    for (const difference of differences) out.push(differenceLine(state, difference));
+    for (const step of steps) out.push(stepLine(state, step));
   }
   if (state.changes) {
     out.push("", `## What upstream ${release.label} brought`, "");
@@ -421,7 +533,7 @@ function unexercisedAreas(state) {
   if (!state.packages) return [];
   const packages = state.packages.atRelease;
   const forkAreas = new Set(
-    state.differences.flatMap((d) => d.files.map((path) => packageOf(path, packages))),
+    state.steps.flatMap((step) => step.files.map((path) => packageOf(path, packages))),
   );
   const changed = new Map();
   for (const change of state.changes) {
@@ -439,6 +551,7 @@ function unexercisedAreas(state) {
 class Refusal extends Error {}
 
 const HEAD = (worktree) => git(["rev-parse", "HEAD"], { cwd: worktree });
+const filesOf = (commit) => lines(git(["diff", "--name-only", `${commit}^`, commit]));
 const treeOf = (commit) => git(["rev-parse", `${commit}^{tree}`]);
 const branchExists = (branch) =>
   git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { allowFailure: true })
@@ -525,8 +638,9 @@ function save(state) {
 }
 
 /**
- * Makes the worktree, puts each difference into it as one commit on the fork's base, and
- * checks that together they give the fork's tree. The worktree then moves to the release.
+ * Makes the worktree, lays the fork out in it as one commit for each step on the fork's
+ * base, and checks that together they give the fork's tree. The worktree then moves to
+ * the release.
  */
 function prepare(state) {
   const differences = groupIntoDifferences(forkCommits(state.base.commit, state.fork.tip));
@@ -537,33 +651,25 @@ function prepare(state) {
     );
   }
   git(["worktree", "add", "--detach", state.worktree, state.base.commit]);
+  let steps;
   try {
     const atBase = cliPackages(state.worktree);
-    for (const difference of differences) {
-      const [first] = difference.commits;
-      const firstApplies = git(["rev-parse", `${first.sha}^`]) === HEAD(state.worktree);
-      if (difference.commits.length === 1 && firstApplies) {
-        git(["checkout", "--quiet", "--detach", first.sha], { cwd: state.worktree });
-      } else {
-        foldIntoOne(state.worktree, difference);
-      }
-      difference.replay = HEAD(state.worktree);
-      difference.files = lines(
-        git(["diff", "--name-only", `${difference.replay}^`, difference.replay]),
-      );
-      difference.edits = difference.files.filter(
+    steps = layOut(state.worktree, differences);
+    for (const step of steps) {
+      step.files = filesOf(step.replay);
+      step.edits = step.files.filter(
         (path) =>
           git(["cat-file", "-e", `${state.base.commit}:${path}`], { allowFailure: true }).status ===
           0,
       );
-      difference.step = { status: "pending", conflicts: [] };
+      Object.assign(step, { status: "pending", conflicts: [] });
     }
     if (treeOf(HEAD(state.worktree)) !== treeOf(state.fork.tip)) {
       throw new Stop(
-        "The fork's differences, each made one commit on its upstream base, do not give the fork's own tree.",
+        "The fork, laid out on its upstream base one commit for each step, does not give the fork's own tree.",
       );
     }
-    // The differences' commits are kept reachable until the process ends.
+    // The steps' commits are kept reachable until the process ends.
     git(["update-ref", `refs/bring-in/${state.intakeBranch}`, HEAD(state.worktree)]);
     git(["switch", "--quiet", "-c", state.intakeBranch, state.release.commit], {
       cwd: state.worktree,
@@ -574,9 +680,23 @@ function prepare(state) {
     git(["worktree", "remove", "--force", state.worktree]);
     throw error;
   }
-  state.differences = differences;
+  state.steps = steps;
   state.changes = releaseChanges(state.base.commit, state.release.commit);
   state.gateLog = join(dirname(stateFile(state.worktree)), "gates.log");
+}
+
+/** The command line this process was run with, as the owner can run it again. */
+function rerunCommand() {
+  const script = relative(process.cwd(), process.argv[1]) || process.argv[1];
+  return ["node", script, ...process.argv.slice(2)].map(shellWord).join(" ");
+}
+
+/** The commands that clear an attempt away and bring the release in from the start. */
+function startAgainCommand(worktree, intakeBranch) {
+  return (
+    `git worktree remove --force ${shellWord(worktree)} && ` +
+    `git branch -D ${shellWord(intakeBranch)} && ${rerunCommand()}`
+  );
 }
 
 /** Takes up an earlier attempt after rework: the commits on the intake branch are its steps. */
@@ -592,7 +712,7 @@ function resume(state) {
   if (saved.fork.tip !== state.fork.tip) {
     throw new Refusal(
       `${state.fork.branch} has moved since this release was started in ${state.worktree}. ` +
-        `Remove that worktree and the branch ${saved.intakeBranch} to start again.`,
+        `Start again from the fork as it now is: ${startAgainCommand(state.worktree, saved.intakeBranch)}`,
     );
   }
   if (cherryPickInProgress(state.worktree)) {
@@ -618,25 +738,29 @@ function resume(state) {
       `Switch ${state.worktree} back to ${saved.intakeBranch}, then run this again.`,
     );
   }
-  const steps = lines(
+  const commits = lines(
     git(["rev-list", "--reverse", "--first-parent", `${saved.release.commit}..HEAD`], {
       cwd: state.worktree,
     }),
   );
   // Every step up to the one that stopped has its commit; a commit past it is rework
-  // made as a commit of its own, and would be taken for the next difference.
-  const reached = saved.differences.filter((d) => d.step.status !== "pending").length;
-  if (steps.length > reached) {
+  // made as a commit of its own, and would be taken for the next step.
+  const reached = saved.steps.filter((step) => step.status !== "pending").length;
+  if (commits.length > reached) {
     throw new Refusal(
-      `${saved.intakeBranch} holds ${steps.length - reached} commit(s) past the step that ` +
-        "stopped. Each difference is one commit, so fold the rework into that step's commit " +
+      `${saved.intakeBranch} holds ${commits.length - reached} commit(s) past the step that ` +
+        "stopped. Each step is one commit, so fold the rework into that step's commit " +
         "(git reset --soft HEAD~1, then git commit --amend), then run this again.",
     );
   }
-  Object.assign(state, saved, { gates: state.gates, outcome: "running", stopReason: undefined });
-  state.differences.forEach((difference, index) => {
-    const step = difference.step;
-    if (index >= steps.length) {
+  Object.assign(state, saved, {
+    gates: state.gates,
+    outcome: "running",
+    stopReason: undefined,
+    notMovedBecause: undefined,
+  });
+  state.steps.forEach((step, index) => {
+    if (index >= commits.length) {
       Object.assign(step, {
         status: "pending",
         commit: undefined,
@@ -645,9 +769,9 @@ function resume(state) {
       });
       return;
     }
-    if (step.status === "passed" && step.commit === steps[index]) return;
-    if (step.commit !== steps[index] && step.status !== "pending") step.reworked = true;
-    Object.assign(step, { status: "replayed", commit: steps[index], proof: undefined });
+    if (step.status === "passed" && step.commit === commits[index]) return;
+    if (step.commit !== commits[index] && step.status !== "pending") step.reworked = true;
+    Object.assign(step, { status: "replayed", commit: commits[index], proof: undefined });
   });
 }
 
@@ -656,18 +780,27 @@ function stopAt(state, reason) {
   state.stopReason = reason;
 }
 
+/** The upstream files a step edits whose changes the release already makes. */
+function providedByRelease(state, step) {
+  const byPath = new Map(state.changes.map((change) => [change.from, change]));
+  const changedNow = new Set(filesOf(step.commit));
+  return step.edits.filter((path) => {
+    const change = byPath.get(path);
+    return change?.status !== "D" && !changedNow.has(change?.to ?? path);
+  });
+}
+
 /**
- * Replays each difference not yet on the release and gates each step not yet proven, in
- * the fork's order, stopping at the first that conflicts or fails.
+ * Replays each step not yet on the release and gates each one not yet proven, in the
+ * fork's order, stopping at the first that conflicts or fails.
  */
 function replay(state) {
   save(state);
-  for (const difference of state.differences) {
-    const step = difference.step;
+  for (const step of state.steps) {
     if (step.status === "passed") continue;
-    process.stderr.write(`${difference.label}\n`);
+    process.stderr.write(`${stepName(step)}\n`);
     if (step.status === "pending") {
-      const conflicts = cherryPick(state.worktree, [difference.replay]);
+      const conflicts = cherryPick(state.worktree, [step.replay]);
       if (conflicts.length > 0) {
         Object.assign(step, { status: "conflicted", conflicts });
         return stopAt(
@@ -678,13 +811,17 @@ function replay(state) {
       step.commit = HEAD(state.worktree);
     }
     step.empty = treeOf(step.commit) === treeOf(`${step.commit}^`);
+    step.provided = providedByRelease(state, step);
     const atTop = step.commit === HEAD(state.worktree);
     if (!atTop) git(["checkout", "--quiet", "--detach", step.commit], { cwd: state.worktree });
     step.proof = runGates(state.worktree, state.gates, state.gateLog);
     // What passed must be what the commit holds, not files the gates changed beside it.
+    // Those files are named in the account and cleared away, so that the step can be
+    // gated again once it is reworked.
     step.proof.leftChanges = uncommitted(state.worktree);
     if (step.proof.leftChanges.length > 0) {
       git(["checkout", "--quiet", "--", "."], { cwd: state.worktree });
+      git(["clean", "--quiet", "--force", "-d"], { cwd: state.worktree });
     }
     if (!atTop) git(["switch", "--quiet", state.intakeBranch], { cwd: state.worktree });
     const failed = step.proof.failedGate || step.proof.leftChanges.length > 0;
@@ -705,32 +842,80 @@ function replay(state) {
   return undefined;
 }
 
-/** Moves the fork's branch to the replay, unless it is checked out or has moved meanwhile. */
+/** An operation under way in a checkout that moving its branch would end. */
+function operationInProgress(checkout) {
+  const pseudoRefs = {
+    MERGE_HEAD: "merge",
+    CHERRY_PICK_HEAD: "cherry-pick",
+    REVERT_HEAD: "revert",
+  };
+  for (const [ref, operation] of Object.entries(pseudoRefs)) {
+    const found = git(["rev-parse", "--verify", "--quiet", ref], {
+      cwd: checkout,
+      allowFailure: true,
+    });
+    if (found.status === 0) return operation;
+  }
+  return undefined;
+}
+
+/**
+ * Moves the fork's branch to the replay, unless it has moved meanwhile. Where the branch
+ * is checked out, its checkout moves with it, keeping changes no commit holds where the
+ * release leaves their files alone; where it cannot, the fork waits for the owner.
+ */
 function moveFork(state) {
   const forkRef = `refs/heads/${state.fork.branch}`;
+  const finishCommand = rerunCommand();
+  const movedMeanwhile = () => {
+    state.outcome = "ready";
+    state.notMovedBecause =
+      "it moved while the release was being brought in, so it holds commits this replay " +
+      `lacks. Start again from the fork as it now is: ${code(startAgainCommand(state.worktree, state.intakeBranch))}`;
+  };
+  if (git(["rev-parse", forkRef]) !== state.fork.tip) return movedMeanwhile();
   const checkedOut = git(["worktree", "list", "--porcelain"])
     .split("\n\n")
     .find((entry) => entry.split("\n").includes(`branch ${forkRef}`));
   if (checkedOut) {
-    state.outcome = "ready";
-    state.notMovedBecause = `it is checked out in ${code(checkedOut.split("\n")[0].replace(/^worktree /, ""))}.`;
-    return;
-  }
-  const moved = git(
-    [
-      "update-ref",
-      "-m",
-      `bring in upstream ${state.release.label}`,
-      forkRef,
-      state.head,
-      state.fork.tip,
-    ],
-    { allowFailure: true },
-  );
-  if (moved.status !== 0) {
-    state.outcome = "ready";
-    state.notMovedBecause = "it moved while the release was being brought in.";
-    return;
+    const checkout = checkedOut.split("\n")[0].replace(/^worktree /, "");
+    state.checkout = checkout;
+    const operation = operationInProgress(checkout);
+    if (operation) {
+      state.outcome = "ready";
+      state.notMovedBecause =
+        `it is checked out in ${code(checkout)}, where a ${operation} is under way. ` +
+        `Finish it or abort it, then run ${code(finishCommand)} again to move ${code(state.fork.branch)}.`;
+      return;
+    }
+    const moved = git(["reset", "--quiet", "--keep", state.head], {
+      cwd: checkout,
+      allowFailure: true,
+    });
+    if (moved.status !== 0) {
+      const moving = new Set(lines(git(["diff", "--name-only", state.fork.tip, state.head])));
+      const overwritten = uncommitted(checkout).filter((path) => moving.has(path));
+      state.outcome = "ready";
+      state.notMovedBecause =
+        `it is checked out in ${code(checkout)}, where moving it would overwrite changes no ` +
+        `commit holds to ${overwritten.length > 0 ? listed(overwritten.map(code)) : "its files"}. Put them aside with ` +
+        `${code(`git -C ${shellWord(checkout)} stash --include-untracked`)}, then run ` +
+        `${code(finishCommand)} again to move it.`;
+      return;
+    }
+  } else {
+    const moved = git(
+      [
+        "update-ref",
+        "-m",
+        `bring in upstream ${state.release.label}`,
+        forkRef,
+        state.head,
+        state.fork.tip,
+      ],
+      { allowFailure: true },
+    );
+    if (moved.status !== 0) return movedMeanwhile();
   }
   state.outcome = "moved";
   git(["worktree", "remove", "--force", state.worktree]);
