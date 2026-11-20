@@ -272,7 +272,9 @@ The process tells differences apart by their names (see [Differences](#differenc
 A later commit that carries only names an earlier difference holds is a repair of that
 difference, and is folded into its commit as the release is brought in. A repair made on
 top of a later difference does not apply without it, so it is replayed as a step of its
-own directly after that difference, and the account names it after both. A repair to
+own directly after that difference, and the account names it after both and lists it
+among the repairs that keep the fork from being one commit for each difference, for the
+owner to fold in by hand. A repair to
 `base` that changes a harness file or README lines a difference brought is one of these.
 A commit that carries no name belongs to `base`. A commit is the unit of a difference, so one that
 brings in several new names is one difference carrying them all, and the account

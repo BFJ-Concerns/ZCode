@@ -197,6 +197,7 @@ test("a release every difference replays onto moves the fork to it, one commit p
 
   assert.equal(existsSync(join(root, "repository-Worktrees", "bring-in-v2.0.0")), false);
   assert.equal(git(repository, "branch", "--list", "bring-in-*"), "");
+  assert.doesNotMatch(account, /Not yet one commit/, "every repair folds into its difference");
 });
 
 test("a release a difference conflicts with stops there and leaves the fork where it was", (t) => {
@@ -562,6 +563,52 @@ test("repairs made on a later difference, the ground's among them, are replayed 
   assert.match(
     account,
     /\*\*alpha\*\*, its repair made on \*\*gamma\*\*: replayed cleanly.*passed/,
+  );
+  assert.match(account, /^## Not yet one commit for each difference$/m);
+});
+
+test("a repair made on another repair still waiting is placed once that one is", (t) => {
+  const { repository } = forkAndRelease(
+    t,
+    (repository) => commit(repository, "chore: sync source v2.0.0", { "app/src/b.ts": ["new"] }),
+    {
+      fork: (repository) => {
+        forkOfThree(repository);
+        commit(repository, "gamma: drive the terminal", {
+          "fork/harness/driver.mjs": ["export const quit = 1;"],
+          "fork/rungs/gamma/stand-in.rung.mjs": "",
+        });
+        // Alpha's repair changes gamma's harness file, and a ground repair is made on it.
+        commit(repository, "alpha: quit in two presses", {
+          "app/src/fork/alpha/index.ts": ["export const alpha = 3;"],
+          "fork/harness/driver.mjs": ["export const quit = 2;"],
+        });
+        commit(repository, "fork: quit in three presses", {
+          "fork/harness/driver.mjs": ["export const quit = 3;"],
+        });
+      },
+    },
+  );
+
+  const { exitCode, account, stderr } = bringIn(repository);
+
+  assert.equal(exitCode, 0, `${account}${stderr}`);
+  assert.deepEqual(subjects(repository, "v2.0.0..fork").slice(0, 3), [
+    "fork: quit in three presses",
+    "alpha: quit in two presses",
+    "gamma: drive the terminal",
+  ]);
+  assert.equal(git(repository, "show", "fork:fork/harness/driver.mjs"), "export const quit = 3;");
+  assert.match(account, /\*\*alpha\*\*, its repair made on \*\*gamma\*\*: .*passed/);
+  assert.match(account, /\*\*base\*\*, its repair made on \*\*gamma\*\*: .*passed/);
+  const notOne = account.slice(account.indexOf("## Not yet one commit for each difference"));
+  assert.match(
+    notOne,
+    /^- \*\*alpha\*\*, its repair made on \*\*gamma\*\*: [0-9a-f]{8} \(alpha: quit in two presses\)$/m,
+  );
+  assert.match(
+    notOne,
+    /^- \*\*base\*\*, its repair made on \*\*gamma\*\*: [0-9a-f]{8} \(fork: quit in three presses\)$/m,
   );
 });
 

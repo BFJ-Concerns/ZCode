@@ -159,10 +159,12 @@ function forkCommits(base, tip) {
       `The fork holds merge commits above upstream ${short(base)}; it must be linear.`,
     );
   }
-  return lines(git(["log", "--reverse", "--format=%H%x09%s", `${base}..${tip}`])).map((line) => {
-    const [sha, subject] = line.split("\t");
-    return { sha, subject };
-  });
+  return lines(git(["log", "--reverse", "--format=%H%x09%s", `${base}..${tip}`])).map(
+    (line, position) => {
+      const [sha, subject] = line.split("\t");
+      return { sha, subject, position };
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -259,8 +261,12 @@ function squash(worktree, count, commits) {
  */
 function layOut(worktree, differences) {
   const steps = [];
-  /** Repairs not yet placed, in the order they were made. */
+  /** Repairs not yet placed, in the order they were made, whichever difference they repair. */
   const waiting = [];
+  const wait = (repair) => {
+    const later = waiting.findIndex((other) => other.commit.position > repair.commit.position);
+    waiting.splice(later === -1 ? waiting.length : later, 0, repair);
+  };
   /** Whether a repair to `difference` waits among the first `count` repairs waiting. */
   const repairWaits = (difference, count = waiting.length) =>
     waiting.slice(0, count).some((repair) => repair.difference === difference);
@@ -293,7 +299,7 @@ function layOut(worktree, differences) {
     for (const commit of repairs) {
       const repair = { difference, commit };
       if (!repairWaits(difference) && pick(worktree, commit)) folded.push(commit);
-      else waiting.push(repair);
+      else wait(repair);
     }
     squash(worktree, folded.length, folded);
     steps.push({
@@ -302,14 +308,19 @@ function layOut(worktree, differences) {
       commits: folded,
       replay: HEAD(worktree),
     });
-    // A repair placed leaves the list, so the next one waiting takes its index.
-    for (let index = 0; index < waiting.length; ) {
-      const repair = waiting[index];
-      if (!repairWaits(repair.difference, index) && pick(worktree, repair.commit)) {
-        waiting.splice(index, 1);
-        placeRepair(repair, difference.label);
-      } else {
-        index += 1;
+    // A repair placed can be what an earlier one waiting was made on, so the list is
+    // gone over again, from the start, until a pass places nothing.
+    for (let placed = true; placed; ) {
+      placed = false;
+      for (let index = 0; index < waiting.length; ) {
+        const repair = waiting[index];
+        if (!repairWaits(repair.difference, index) && pick(worktree, repair.commit)) {
+          waiting.splice(index, 1);
+          placeRepair(repair, difference.label);
+          placed = true;
+        } else {
+          index += 1;
+        }
       }
     }
   }
@@ -480,6 +491,22 @@ function account(state) {
     out.push("", "## The differences", "");
     for (const step of steps) out.push(stepLine(state, step));
   }
+  const placed = steps.filter((step) => step.follows);
+  if (placed.length > 0) {
+    out.push(
+      "",
+      "## Not yet one commit for each difference",
+      "",
+      "Each of these repairs was made on a later difference and does not apply without it, so " +
+        "its difference cannot be withdrawn alone until the owner folds it in by hand.",
+      "",
+      ...placed.map(
+        (step) =>
+          `- ${stepName(step, bold)}: ` +
+          `${step.commits.map((commit) => `${short(commit.sha)} (${commit.subject})`).join(", ")}`,
+      ),
+    );
+  }
   if (state.changes) {
     out.push("", `## What upstream ${release.label} brought`, "");
     const of = (status) => state.changes.filter((change) => change.status === status).length;
@@ -561,11 +588,13 @@ const uncommitted = (worktree) =>
   lines(git(["status", "--porcelain", "--untracked-files=all"], { cwd: worktree })).map((line) =>
     line.slice(3),
   );
-const cherryPickInProgress = (worktree) =>
-  git(["rev-parse", "--verify", "--quiet", "CHERRY_PICK_HEAD"], {
-    cwd: worktree,
-    allowFailure: true,
-  }).status === 0;
+/** Whether `ref`, a pseudo-ref such as CHERRY_PICK_HEAD, is set in a checkout. */
+const refIsSet = (checkout, ref) =>
+  git(["rev-parse", "--verify", "--quiet", ref], { cwd: checkout, allowFailure: true }).status ===
+  0;
+const cherryPickInProgress = (worktree) => refIsSet(worktree, "CHERRY_PICK_HEAD");
+/** The operations under way in a checkout that moving its branch would end. */
+const OPERATIONS = { MERGE_HEAD: "merge", CHERRY_PICK_HEAD: "cherry-pick", REVERT_HEAD: "revert" };
 
 function parseCommandLine() {
   const { values, positionals } = parseArgs({
@@ -842,23 +871,6 @@ function replay(state) {
   return undefined;
 }
 
-/** An operation under way in a checkout that moving its branch would end. */
-function operationInProgress(checkout) {
-  const pseudoRefs = {
-    MERGE_HEAD: "merge",
-    CHERRY_PICK_HEAD: "cherry-pick",
-    REVERT_HEAD: "revert",
-  };
-  for (const [ref, operation] of Object.entries(pseudoRefs)) {
-    const found = git(["rev-parse", "--verify", "--quiet", ref], {
-      cwd: checkout,
-      allowFailure: true,
-    });
-    if (found.status === 0) return operation;
-  }
-  return undefined;
-}
-
 /**
  * Moves the fork's branch to the replay, unless it has moved meanwhile. Where the branch
  * is checked out, its checkout moves with it, keeping changes no commit holds where the
@@ -880,7 +892,7 @@ function moveFork(state) {
   if (checkedOut) {
     const checkout = checkedOut.split("\n")[0].replace(/^worktree /, "");
     state.checkout = checkout;
-    const operation = operationInProgress(checkout);
+    const operation = Object.entries(OPERATIONS).find(([ref]) => refIsSet(checkout, ref))?.[1];
     if (operation) {
       state.outcome = "ready";
       state.notMovedBecause =
