@@ -65,6 +65,40 @@ test("a run names a provider and a listing-only model and sends the requested re
   assert.equal(gateway.modelRequests().length, 1, "a later run still uses the owner's default");
 });
 
+test("a named level from the built-in rules is sent as effort for a capability-only listing", async (t) => {
+  const model = "openai/gpt-5.4";
+  const gateway = await startModelProvider({
+    listing: { data: [{ id: model, supported_parameters: ["reasoning"] }] },
+    script: [say("Used the named level.")],
+  });
+  t.after(() => gateway.close());
+  const providerConfig = providerConfiguration({
+    baseUrl: gateway.baseUrl,
+    providerId: "gateway",
+    modelIds: ["owner-choice"],
+  });
+  const home = await createOwnerHome({ providerConfig });
+  t.after(() => home.remove());
+
+  const outcome = await run(t, home, [
+    "--provider",
+    "gateway",
+    "--model",
+    model,
+    "--reasoning-level",
+    "xhigh",
+  ]);
+
+  assert.equal(outcome.exitCode, 0, outcome.stderr);
+  assert.equal(outcome.result.response, "Used the named level.");
+  const requests = gateway.modelRequests();
+  assert.equal(requests.length, 1);
+  const [{ body }] = requests;
+  assert.equal(body.model, model);
+  assert.equal(body.reasoning_effort, "xhigh");
+  assert.equal(body.thinking, undefined);
+});
+
 test("a resumed run uses its explicit selection in place of the saved model", async (t) => {
   const { home, fallback, gateway } = await receivers(t);
   const earlier = await run(t, home, []);
