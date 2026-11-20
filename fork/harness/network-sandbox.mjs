@@ -42,7 +42,10 @@ export function requireSandbox() {
  */
 export const attempts = () => control("GET", "/attempts");
 
-/** Empties the record, so that one test's attempts are not read as the next one's. */
+/**
+ * Empties the record, and forgets the names pointed at stand-ins, so that one test's
+ * attempts and names are not read as the next one's.
+ */
 export const forgetAttempts = async () => {
   await control("POST", "/forget");
 };
