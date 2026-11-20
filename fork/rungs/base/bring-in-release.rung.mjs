@@ -484,7 +484,7 @@ test("a repair known only by its marker in one of upstream's files is folded int
 });
 
 test("repairs made on a later difference, the ground's among them, are replayed after it", (t) => {
-  const { repository } = forkAndRelease(
+  const { repository, forkTip } = forkAndRelease(
     t,
     (repository) => commit(repository, "chore: sync source v2.0.0", { "app/src/b.ts": ["new"] }),
     {
@@ -541,7 +541,23 @@ test("repairs made on a later difference, the ground's among them, are replayed 
     },
   );
 
-  const { exitCode, account, stderr } = bringIn(repository);
+  // Not one commit for each difference, the fork waits for the owner's word to move.
+  const held = bringIn(repository);
+  assert.equal(held.exitCode, 0, `${held.account}${held.stderr}`);
+  assert.equal(git(repository, "rev-parse", "fork"), forkTip);
+  assert.match(held.account, /^# Upstream v2\.0\.0 brought in, waiting to move the fork$/m);
+  assert.match(
+    held.account,
+    /`fork` stays at [0-9a-f]{8}: it would not be one commit for each difference/,
+  );
+  const [startAgain, moveAnyway] = commandsAfter(held.account, "Fold each");
+  assert.match(
+    startAgain,
+    /^git worktree remove --force .* && git branch -D bring-in-v2\.0\.0 && node /,
+  );
+  assert.match(moveAnyway, / --keep-separate-repairs$/);
+
+  const { exitCode, account, stderr } = runAsOwner(repository, moveAnyway);
 
   assert.equal(exitCode, 0, `${account}${stderr}`);
   assert.deepEqual(subjects(repository, "v2.0.0..fork"), [
@@ -568,7 +584,7 @@ test("repairs made on a later difference, the ground's among them, are replayed 
 });
 
 test("a repair made on another repair still waiting is placed once that one is", (t) => {
-  const { repository } = forkAndRelease(
+  const { repository, forkTip } = forkAndRelease(
     t,
     (repository) => commit(repository, "chore: sync source v2.0.0", { "app/src/b.ts": ["new"] }),
     {
@@ -590,7 +606,23 @@ test("a repair made on another repair still waiting is placed once that one is",
     },
   );
 
-  const { exitCode, account, stderr } = bringIn(repository);
+  // Not one commit for each difference, the fork waits for the owner's word to move.
+  const held = bringIn(repository);
+  assert.equal(held.exitCode, 0, `${held.account}${held.stderr}`);
+  assert.equal(git(repository, "rev-parse", "fork"), forkTip);
+  assert.match(held.account, /^# Upstream v2\.0\.0 brought in, waiting to move the fork$/m);
+  assert.match(
+    held.account,
+    /`fork` stays at [0-9a-f]{8}: it would not be one commit for each difference/,
+  );
+  const [startAgain, moveAnyway] = commandsAfter(held.account, "Fold each");
+  assert.match(
+    startAgain,
+    /^git worktree remove --force .* && git branch -D bring-in-v2\.0\.0 && node /,
+  );
+  assert.match(moveAnyway, / --keep-separate-repairs$/);
+
+  const { exitCode, account, stderr } = runAsOwner(repository, moveAnyway);
 
   assert.equal(exitCode, 0, `${account}${stderr}`);
   assert.deepEqual(subjects(repository, "v2.0.0..fork").slice(0, 3), [

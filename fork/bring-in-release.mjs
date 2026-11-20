@@ -5,8 +5,9 @@
  * is replayed and proven and the fork's branch moves to the result, its checkout with it
  * where it is checked out, or the replay stops at the broken difference and the fork
  * stays where it was. When the result is proven but the fork cannot move (it moved
- * meanwhile, or its checkout holds changes the move would overwrite), the result waits
- * on a branch and the account gives the command that finishes the job. Either way it
+ * meanwhile, its checkout holds changes the move would overwrite, or it would not be
+ * one commit for each difference), the result waits on a branch and the account gives
+ * the command that finishes the job. Either way it
  * prints an account of what the release did to each difference.
  *
  *   node fork/bring-in-release.mjs <release> [options]
@@ -19,6 +20,9 @@
  *   --gate <command>     a command each step must pass, run by the shell at the top of
  *                        the worktree; repeatable (node fork/check.mjs, node fork/rungs.mjs)
  *   --account <file>     also write the account to this file
+ *   --keep-separate-repairs
+ *                        move the fork even though some repairs are commits of their own
+ *                        after a later difference, so it is not one commit for each
  *
  * A difference is told apart by its name, wherever the name appears in a commit: a
  * `src/fork/<name>/` directory, a `fork/rungs/<name>/` directory, or a `fork(<name>): `
@@ -28,7 +32,8 @@
  * difference already on the fork is a repair of that difference, and is folded into its
  * commit on the way, so that the fork on the release is the release plus one commit for
  * each difference. A repair made on top of a later difference, which does not apply
- * without it, is instead replayed as a step of its own directly after that difference.
+ * without it, is instead replayed as a step of its own directly after that difference,
+ * and the fork moves with such a step only at --keep-separate-repairs.
  * A commit that names nothing else belongs to the fork's ground, `base`.
  *
  * After a stop, the worktree is left as the replay reached it: a conflicting difference
@@ -605,6 +610,7 @@ function parseCommandLine() {
       worktree: { type: "string" },
       gate: { type: "string", multiple: true },
       account: { type: "string" },
+      "keep-separate-repairs": { type: "boolean", default: false },
     },
   });
   if (positionals.length !== 1) {
@@ -649,6 +655,7 @@ function startState(options) {
     base: { commit: base, label: releaseLabel(base) },
     fork: { branch: options.fork, tip },
     gates: options.gates,
+    keepSeparateRepairs: options["keep-separate-repairs"],
     worktree,
     intakeBranch: `bring-in-${label.replaceAll(/[^A-Za-z0-9._-]/g, "-")}`,
     outcome: "running",
@@ -714,10 +721,12 @@ function prepare(state) {
   state.gateLog = join(dirname(stateFile(state.worktree)), "gates.log");
 }
 
-/** The command line this process was run with, as the owner can run it again. */
-function rerunCommand() {
+/** The command line this process was run with, as the owner can run it again, plus `flag`. */
+function rerunCommand(flag) {
   const script = relative(process.cwd(), process.argv[1]) || process.argv[1];
-  return ["node", script, ...process.argv.slice(2)].map(shellWord).join(" ");
+  const args = process.argv.slice(2);
+  if (flag && !args.includes(flag)) args.push(flag);
+  return ["node", script, ...args].map(shellWord).join(" ");
 }
 
 /** The commands that clear an attempt away and bring the release in from the start. */
@@ -784,6 +793,7 @@ function resume(state) {
   }
   Object.assign(state, saved, {
     gates: state.gates,
+    keepSeparateRepairs: state.keepSeparateRepairs,
     outcome: "running",
     stopReason: undefined,
     notMovedBecause: undefined,
@@ -879,6 +889,17 @@ function replay(state) {
 function moveFork(state) {
   const forkRef = `refs/heads/${state.fork.branch}`;
   const finishCommand = rerunCommand();
+  // The fork moves only when it is one commit for each difference, unless the owner says.
+  if (state.steps.some((step) => step.follows) && !state.keepSeparateRepairs) {
+    state.outcome = "ready";
+    state.notMovedBecause =
+      "it would not be one commit for each difference: the repairs listed under " +
+      '"Not yet one commit for each difference" are commits of their own. Fold each into ' +
+      "its difference's commit on the fork and start again " +
+      `(${code(startAgainCommand(state.worktree, state.intakeBranch))}), or move the fork ` +
+      `with them as they are: ${code(rerunCommand("--keep-separate-repairs"))}`;
+    return;
+  }
   const movedMeanwhile = () => {
     state.outcome = "ready";
     state.notMovedBecause =
