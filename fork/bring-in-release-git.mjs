@@ -103,10 +103,19 @@ function changedLines(from, to) {
   );
 }
 
-/** Maps a span of unchanged, consecutive lines through a diff. */
+const contains = (range, span) => range.begin <= span.begin && range.end >= span.end;
+const length = (range) => range.end - range.begin;
+
+/** Maps unchanged lines or the gap a deletion leaves to the candidate. */
 function projectLines(span, changes) {
   let offset = 0;
   for (const { before, after } of changes) {
+    // A change spanning a deletion gap maps it to a region. If that region
+    // grew relative to the expected result, Git cannot locate the deletion
+    // within it separately from the new lines.
+    if (length(span) === 0 && contains(before, span)) {
+      return length(after) <= length(before) ? after : undefined;
+    }
     if (before.end <= span.begin) offset = after.end - before.end;
     else if (before.begin >= span.end) break;
     else return undefined;
@@ -114,12 +123,10 @@ function projectLines(span, changes) {
   return { begin: span.begin + offset, end: span.end + offset };
 }
 
-const contains = (range, span) => range.begin <= span.begin && range.end >= span.end;
-
 /**
  * A preview can conflict on surrounding changes. Check that the candidate has the
- * edited lines together and that its diff from the original file puts them at the edit
- * site, replacing the original lines or inserting at the original boundary.
+ * new lines or deletion gap at the edit site, and that its diff from the original
+ * file changes the matching lines or insertion boundary.
  */
 function containsTextEdits(step, path, target, targetPath) {
   const before = blobAt(`${step.replay}^`, path);
@@ -135,7 +142,6 @@ function containsTextEdits(step, path, target, targetPath) {
     return false;
   }
   return edits.every((edit) => {
-    if (edit.after.begin === edit.after.end) return false;
     const projected = projectLines(edit.after, afterToCandidate);
     return (
       projected &&
