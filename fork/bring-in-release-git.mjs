@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 export const run = (command, args, options = {}) =>
@@ -30,7 +31,14 @@ export function forkCheckout(forkRef) {
   if (!entry) return undefined;
   const path = entry.split("\n")[0].replace(/^worktree /, "");
   const operation = Object.entries(OPERATIONS).find(([ref]) => refIsSet(path, ref))?.[1];
-  return { path, operation };
+  // A failed mailbox patch can leave a clean index and no operation pseudo-ref.
+  const applying = git(
+    ["rev-parse", "--path-format=absolute", "--git-path", "rebase-apply/applying"],
+    {
+      cwd: path,
+    },
+  );
+  return { path, operation: operation ?? (existsSync(applying) ? "git am" : undefined) };
 }
 
 /**

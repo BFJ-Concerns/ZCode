@@ -405,6 +405,35 @@ test("a checkout whose changes the move would overwrite waits, and the account's
   assert.equal(existsSync(join(root, "repository-Worktrees", "bring-in-v2.0.0")), false);
 });
 
+test("a paused git am holds the release until the owner aborts it", (t) => {
+  const { root, repository, forkTip } = forkAndRelease(t, (repository) => {
+    commit(repository, "chore: sync source v2.0.0", { "app/src/b.ts": ["new upstream file"] });
+  });
+  commit(repository, "a patch that overlaps beta", {
+    "app/src/c.ts": withLine(numbered("c"), 5, "patched line five"),
+  });
+  const patch = join(root, "mailbox.patch");
+  writeFileSync(patch, git(repository, "format-patch", "-1", "--stdout") + "\n");
+
+  const checkout = join(root, "fork-checkout");
+  git(repository, "worktree", "add", "--quiet", checkout, "fork");
+  const am = spawnSync("git", ["am", patch], { cwd: checkout, env: ENVIRONMENT, encoding: "utf8" });
+  assert.notEqual(am.status, 0);
+  assert.match(am.stdout, /Patch failed/);
+  assert.equal(git(checkout, "status", "--porcelain"), "");
+
+  const waiting = bringIn(checkout);
+
+  assert.equal(git(checkout, "rev-parse", "HEAD"), forkTip);
+  assert.equal(waiting.exitCode, 3, `${waiting.account}${waiting.stderr}`);
+  assert.match(waiting.account, /where `git am` is under way/);
+  git(checkout, "am", "--abort");
+  const [finish] = commandsAfter(waiting.account, "then run");
+  const finished = runAsOwner(checkout, finish);
+  assert.equal(finished.exitCode, 0, `${finished.account}${finished.stderr}`);
+  assert.notEqual(git(checkout, "rev-parse", "HEAD"), forkTip);
+});
+
 test("a fork that moves while the release is brought in is kept, and the account's command starts again", (t) => {
   const { repository, forkTip } = forkAndRelease(t, (repository) => {
     commit(repository, "chore: sync source v2.0.0", { "app/src/b.ts": ["new upstream file"] });

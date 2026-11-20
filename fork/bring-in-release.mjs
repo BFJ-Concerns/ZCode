@@ -905,7 +905,7 @@ async function moveFork(state) {
   if (checkout?.operation) {
     state.outcome = "ready";
     state.notMovedBecause =
-      `it is checked out in ${code(checkout.path)}, where a ${checkout.operation} is under way. ` +
+      `it is checked out in ${code(checkout.path)}, where ${code(checkout.operation)} is under way. ` +
       `Finish it or abort it, then run ${code(finishCommand)} again to move ${code(state.fork.branch)}.`;
     return;
   }
