@@ -36,13 +36,13 @@
  * and the fork moves with such a step only at --keep-separate-repairs.
  * A commit that names nothing else belongs to the fork's ground, `base`.
  *
- * After a stop, the worktree is left as the replay reached it: a conflicting difference
- * is mid cherry-pick, and a difference whose gates failed is its last commit. Files the
- * gates left behind are named in the account and cleared away. Rework the difference
- * there (resolve and `git cherry-pick --continue`, or amend), then run the same command
- * again: it gates what was reworked and carries on from the next difference.
+ * After a stop, the worktree is left as the replay reached it. Fix the Git failure and
+ * run `git cherry-pick --continue` if a pick is in progress, or amend the last commit
+ * if a gate failed. Files the gates left behind are named in the account and cleared
+ * away. Run the same release command again to retry an unstarted pick or gate the
+ * completed commit and carry on.
  *
- * Exits 0 when the fork moves, 1 when the replay stops at a difference, 2 when it
+ * Exits 0 when the fork moves, 1 when preparation or replay stops, 2 when it
  * refuses to start or resume, and 3 when the proven result waits on its branch.
  */
 
@@ -50,10 +50,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  cherryPick,
   cleanUpReplay,
+  foldForLayout,
   forkCheckout,
   git,
+  LayoutError,
   moveReleaseRef,
+  pickForLayout,
   refIsSet,
   refTip,
   run,
@@ -209,50 +213,6 @@ function cliPackages(worktree) {
 // ---------------------------------------------------------------------------------------
 // Replay and gates
 
-function cherryPick(worktree, commits) {
-  // --keep-redundant-commits is --empty=keep under the name Git before 2.45 knows.
-  const picked = git(["cherry-pick", "--allow-empty", "--keep-redundant-commits", ...commits], {
-    cwd: worktree,
-    allowFailure: true,
-  });
-  if (picked.status === 0) return [];
-  const conflicts = lines(git(["diff", "--name-only", "--diff-filter=U"], { cwd: worktree }));
-  if (conflicts.length === 0) throw new Error(`git cherry-pick failed:\n${picked.stderr.trim()}`);
-  return conflicts;
-}
-
-/**
- * Puts one of the fork's commits on top of the worktree's checkout: the commit itself when
- * it already sits there, a cherry-pick of it otherwise. Leaves the checkout as it was and
- * answers false when it does not apply.
- */
-function pick(worktree, commit) {
-  if (git(["rev-parse", `${commit.sha}^`]) === HEAD(worktree)) {
-    git(["checkout", "--quiet", "--detach", commit.sha], { cwd: worktree });
-    return true;
-  }
-  const picked = git(
-    // --keep-redundant-commits is --empty=keep under the name Git before 2.45 knows.
-    ["cherry-pick", "--allow-empty", "--keep-redundant-commits", commit.sha],
-    { cwd: worktree, allowFailure: true },
-  );
-  if (picked.status === 0) return true;
-  if (cherryPickInProgress(worktree)) git(["cherry-pick", "--abort"], { cwd: worktree });
-  return false;
-}
-
-/** Makes the checkout's last `count` commits one, under the messages of `commits`. */
-function squash(worktree, count, commits) {
-  if (count < 2) return;
-  const message = commits
-    .map((commit) => git(["log", "-1", "--format=%B", commit.sha]).trim())
-    .join("\n\n");
-  git(["reset", "--quiet", "--soft", `HEAD~${count - 1}`], { cwd: worktree });
-  git(["commit", "--quiet", "--no-verify", "--allow-empty", "--amend", "--message", message], {
-    cwd: worktree,
-  });
-}
-
 /**
  * Lays the fork out on its upstream base as the steps it is replayed in, one commit each.
  * Each difference is a step, its repairs folded in. A repair that does not apply directly
@@ -277,7 +237,7 @@ function layOut(worktree, differences) {
     const last = steps.at(-1);
     if (last.follows === follows && last.label === repair.difference.label) {
       last.commits.push(repair.commit);
-      squash(worktree, 2, last.commits);
+      foldForLayout(worktree, 2, last.commits);
       last.replay = HEAD(worktree);
     } else {
       steps.push({
@@ -291,7 +251,7 @@ function layOut(worktree, differences) {
   };
   for (const difference of differences) {
     const [first, ...repairs] = difference.commits;
-    if (!pick(worktree, first)) {
+    if (!pickForLayout(worktree, first)) {
       throw new Stop(
         `${difference.label} does not apply on the fork's upstream base without the ` +
           "differences after it, so the fork cannot be replayed one difference at a time.",
@@ -300,10 +260,10 @@ function layOut(worktree, differences) {
     const folded = [first];
     for (const commit of repairs) {
       const repair = { difference, commit };
-      if (!repairWaits(difference) && pick(worktree, commit)) folded.push(commit);
+      if (!repairWaits(difference) && pickForLayout(worktree, commit)) folded.push(commit);
       else wait(repair);
     }
-    squash(worktree, folded.length, folded);
+    foldForLayout(worktree, folded.length, folded);
     steps.push({
       label: difference.label,
       alsoEdits: difference.alsoEdits,
@@ -316,7 +276,7 @@ function layOut(worktree, differences) {
       placed = false;
       for (let index = 0; index < waiting.length; ) {
         const repair = waiting[index];
-        if (!repairWaits(repair.difference, index) && pick(worktree, repair.commit)) {
+        if (!repairWaits(repair.difference, index) && pickForLayout(worktree, repair.commit)) {
           waiting.splice(index, 1);
           placeRepair(repair, difference.label);
           placed = true;
@@ -420,6 +380,7 @@ function stepLine(state, step) {
   const name = `${stepName(step, bold)}${folded > 0 ? ` (${repairs(folded)} folded in)` : ""}`;
   const touched = joinedFilesTouched(state, step);
   if (step.status === "pending") return `- ${name}: not reached.`;
+  if (step.status === "pick-failed") return `- ${name}: Git could not complete the pick.`;
   if (step.conflicts.length > 0) {
     parts.push(`conflicted in ${listed(step.conflicts.map(code))}`);
     if (step.status === "conflicted") parts.push("waiting to be reworked");
@@ -454,7 +415,9 @@ function account(state) {
   const { release, base, fork } = state;
   const out = [];
   const steps = state.steps ?? [];
-  const stoppedAt = steps.find((step) => step.status === "conflicted" || step.status === "failed");
+  const stoppedAt = steps.find((step) =>
+    ["conflicted", "pick-failed", "failed"].includes(step.status),
+  );
   if (state.outcome === "moved") {
     const withCheckout = state.checkout
       ? `, and its checkout in ${code(state.checkout)} with it`
@@ -775,8 +738,8 @@ function resume(state) {
       cwd: state.worktree,
     }),
   );
-  // Every step up to the one that stopped has its commit; a commit past it is rework
-  // made as a commit of its own, and would be taken for the next step.
+  // A stopped pick counts as reached even if Git did not write its commit. A commit
+  // past the reached steps would be mistaken for the next step.
   const reached = saved.steps.filter((step) => step.status !== "pending").length;
   if (commits.length > reached) {
     throw new Refusal(
@@ -826,13 +789,23 @@ function replay(state) {
     if (step.status === "passed") continue;
     process.stderr.write(`${stepName(step)}\n`);
     if (step.status === "pending") {
-      const conflicts = cherryPick(state.worktree, [step.replay]);
-      if (conflicts.length > 0) {
-        Object.assign(step, { status: "conflicted", conflicts });
-        return stopAt(
-          state,
-          `It does not replay onto the release: ${listed(conflicts.map(code))} conflict.`,
-        );
+      const picked = cherryPick(state.worktree, step.replay);
+      if (!picked.ok) {
+        const { conflicts, diagnostic } = picked;
+        if (conflicts.length > 0) {
+          Object.assign(step, { status: "conflicted", conflicts });
+          return stopAt(
+            state,
+            `It does not replay onto the release: ${listed(conflicts.map(code))} conflict.`,
+          );
+        }
+        // 签名失败时 Git 可能已暂存改动但未提交。记录该步骤以接纳手动完成的提交。
+        step.status = "pick-failed";
+        const recovery = cherryPickInProgress(state.worktree)
+          ? "Fix the Git error and finish the pick with `git cherry-pick --continue`."
+          : "Fix the Git error, then run the release command again to retry the pick.";
+        const gitOutput = diagnostic.replace(/^/gm, "    ");
+        return stopAt(state, `Git could not replay it. ${recovery}\n\n${gitOutput}`);
       }
       step.commit = HEAD(state.worktree);
     }
@@ -942,7 +915,7 @@ async function main() {
       process.stderr.write(`${error.message}\n`);
       return 2;
     }
-    if (!(error instanceof Stop)) throw error;
+    if (!(error instanceof Stop || error instanceof LayoutError)) throw error;
     stopAt(state, error.message);
   }
   if (state.outcome === "running") await moveFork(state);
