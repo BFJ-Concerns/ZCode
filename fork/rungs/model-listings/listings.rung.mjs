@@ -110,6 +110,39 @@ test("served OpenRouter's listing, the command prints the window, output and lev
   });
 });
 
+test("CLIProxyAPI registry levels take precedence over supported parameters, which supply the fallback", async (t) => {
+  const { home } = await ownerWithListing(t, {
+    listing: {
+      data: [
+        {
+          id: "gateway-explicit-levels",
+          thinking: { levels: ["low", "xhigh"] },
+          supported_parameters: ["max_tokens", "reasoning_effort"],
+        },
+        {
+          id: "gateway-empty-levels",
+          thinking: { levels: [] },
+          supported_parameters: ["reasoning_effort"],
+        },
+        {
+          id: "gateway-no-levels",
+          supported_parameters: ["max_tokens"],
+        },
+      ],
+    },
+  });
+
+  const printed = await printedModels(t, home);
+
+  assert.deepEqual(limitsOf(printed, "gateway-explicit-levels").reasoningLevels, ["low", "xhigh"]);
+  assert.deepEqual(limitsOf(printed, "gateway-empty-levels").reasoningLevels, [
+    "low",
+    "medium",
+    "high",
+  ]);
+  assert.deepEqual(limitsOf(printed, "gateway-no-levels").reasoningLevels, ["disabled"]);
+});
+
 test("a capability-only listing preserves built-in reasoning levels and their request mapping", async (t) => {
   const { home, provider } = await ownerWithListing(t, {
     listing: openRouterListing,
