@@ -42,6 +42,9 @@ const ANTHROPIC_API_TYPE = "anthropic-messages";
 /** A built-in rule that holds for every model, as opposed to one written for particular models. */
 const EVERY_MODEL = ".*";
 
+/** Fallback for a reasoning-capable model whose built-in rules give it no specific levels. */
+const CAPABILITY_REASONING_LEVELS = ["low", "medium", "high"] as const;
+
 /**
  * Asks a CLIProxyAPI gateway for its client catalogue, the one listing it serves with
  * each model's limits. Other OpenAI-compatible providers ignore the parameter.
@@ -147,16 +150,37 @@ async function fetchListing(
   request: typeof globalThis.fetch,
   { url, headers }: ListingRequest,
 ): Promise<ListingRead> {
+  const signal = AbortSignal.timeout(LISTING_TIMEOUT_MS);
+  let response: Response;
   try {
-    const response = await request(url, {
+    response = await request(url, {
       headers: { accept: "application/json", ...headers },
-      signal: AbortSignal.timeout(LISTING_TIMEOUT_MS),
+      signal,
     });
-    if (!response.ok) return { status: "failed", reason: `HTTP ${response.status}` };
-    return { status: "read", models: parseModelListing(await response.json()) };
-  } catch (error) {
-    return { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+  } catch {
+    // Request errors can include credentials from the URL and headers.
+    return {
+      status: "failed",
+      reason: signal.aborted ? "Model listing timed out" : "Model listing request failed",
+    };
   }
+  if (!response.ok) return { status: "failed", reason: `HTTP ${response.status}` };
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return {
+      status: "failed",
+      reason: signal.aborted
+        ? "Model listing timed out"
+        : "Model listing response is not readable JSON",
+    };
+  }
+  const models = parseModelListing(body);
+  return models
+    ? { status: "read", models }
+    : { status: "failed", reason: "Model listing has no models or data array" };
 }
 
 /** One listing request for each enabled provider the owner configured with an API key. */
@@ -243,14 +267,17 @@ function joinListings(
       ? config
       : config.withPersonalModelIds([...(config.personalModelIds ?? []), ...added]);
   });
+  const builtinRules = snapshot.zcodeBuiltinModelRules.rules();
   const everyModelRules = new ModelConfigRules(
-    snapshot.zcodeBuiltinModelRules
-      .rules()
-      .filter((rule) => "modelMatch" in rule && rule.modelMatch === EVERY_MODEL),
+    builtinRules.filter((rule) => "modelMatch" in rule && rule.modelMatch === EVERY_MODEL),
+  );
+  // The global enabled/disabled default says nothing about a particular model's levels.
+  const modelRules = new ModelConfigRules(
+    builtinRules.filter((rule) => rule.type !== "model" || rule.modelMatch !== EVERY_MODEL),
   );
   const listingRules = requests.flatMap((request) =>
     (listed.get(request.providerId) ?? []).map((model) =>
-      listingRule(request, model, everyModelRules),
+      listingRule(request, model, everyModelRules, modelRules),
     ),
   );
   return Object.freeze({
@@ -258,10 +285,7 @@ function joinListings(
     [MODEL_LISTING_REPORT]: Object.freeze([...results]),
     revision: JSON.stringify([snapshot.revision, results]),
     personalProviders,
-    zcodeBuiltinModelRules: new ModelConfigRules([
-      ...snapshot.zcodeBuiltinModelRules.rules(),
-      ...listingRules,
-    ]),
+    zcodeBuiltinModelRules: new ModelConfigRules([...builtinRules, ...listingRules]),
   });
 }
 
@@ -274,11 +298,17 @@ function listingRule(
   request: ListingRequest,
   model: ListedModel,
   everyModelRules: ModelConfigRules,
+  modelRules: ModelConfigRules,
 ): ModelConfigRule {
-  const { contextWindow, maxOutputTokens, reasoningLevels } = model;
+  const { contextWindow, maxOutputTokens } = model;
+  const identity = { ...request, modelId: model.modelId };
+  const usesCapabilityFallback =
+    model.reasoningSupported &&
+    !modelRules.resolve(identity).optionSpecs?.reasoningLevel?.values?.length;
+  const reasoningLevels =
+    model.reasoningLevels ?? (usesCapabilityFallback ? CAPABILITY_REASONING_LEVELS : undefined);
   const reasoningMap = reasoningLevels
-    ? everyModelRules.resolve({ ...request, modelId: model.modelId }).optionSpecs?.reasoningLevel
-        ?.map
+    ? everyModelRules.resolve(identity).optionSpecs?.reasoningLevel?.map
     : undefined;
   const config = new ModelConfig({
     enabled: true,
