@@ -32,6 +32,201 @@ export function cherryPick(cwd, commit, { sign = true } = {}) {
   return { ok: false, conflicts, diagnostic: gitDiagnostic(result) };
 }
 
+/** Previews a cherry-pick with Git's merge engine, without touching the index or checkout. */
+export function previewPick(parent, commit) {
+  const args = [
+    "merge-tree",
+    "--write-tree",
+    "--name-only",
+    "--no-messages",
+    "-z",
+    `--merge-base=${commit}^`,
+    parent,
+    commit,
+  ];
+  const result = git(args, { allowFailure: true });
+  if (result.status !== 0 && result.status !== 1) {
+    throw new Error(`Git could not preview the pick of ${commit}: ${gitDiagnostic(result)}`);
+  }
+  const [tree, ...paths] = result.stdout.split("\0");
+  return { tree, conflicts: paths.filter(Boolean) };
+}
+
+const records = (text) => text.split("\0").filter(Boolean);
+
+/** The release's changes since the fork's base, by path at the base and at the release. */
+export function releaseChanges(base, release) {
+  const changes = [];
+  const entries = records(git(["diff", "--name-status", "-z", "-M", base, release]));
+  for (let i = 0; i < entries.length; ) {
+    const status = entries[i++][0];
+    const from = entries[i++];
+    const to = status === "R" || status === "C" ? entries[i++] : from;
+    changes.push({ status, from, to });
+  }
+  return changes;
+}
+
+export const pathsBetween = (from, to) =>
+  records(git(["diff", "--name-only", "--no-renames", "-z", from, to]));
+export const filesOf = (commit) => pathsBetween(`${commit}^`, commit);
+
+function blobAt(ref, path) {
+  const result = git(["rev-parse", "--verify", "--quiet", `${ref}:${path}`], {
+    allowFailure: true,
+  });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
+/** Half-open line ranges, with an empty range at a Git insertion or deletion point. */
+function lineRange(start, count) {
+  const length = Number(count ?? 1);
+  const begin = Number(start) - Number(length > 0);
+  return { begin, end: begin + length };
+}
+
+function changedLines(from, to) {
+  const diff = git([
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--unified=0",
+    from,
+    to,
+  ]);
+  return [...diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)].map(
+    ([, oldStart, oldCount, newStart, newCount]) => ({
+      before: lineRange(oldStart, oldCount),
+      after: lineRange(newStart, newCount),
+    }),
+  );
+}
+
+const contains = (range, span) => range.begin <= span.begin && range.end >= span.end;
+const length = (range) => range.end - range.begin;
+
+/** Maps unchanged lines or the gap a deletion leaves to the candidate. */
+function projectLines(span, changes, expectedBlob, candidateBlob) {
+  let offset = 0;
+  for (const { before, after } of changes) {
+    if (length(span) === 0 && contains(before, span)) {
+      if (length(after) === 0) return after;
+      if (length(before) !== length(after)) return null;
+      // Credit a rewritten region only when its surviving lines retain their
+      // original text in order. A matching line count alone cannot distinguish
+      // a rewrite of the neighbours from a substitute for the deleted line.
+      const expected = git(["cat-file", "blob", expectedBlob], { allowFailure: true });
+      const candidate = git(["cat-file", "blob", candidateBlob], { allowFailure: true });
+      if (expected.status !== 0 || candidate.status !== 0) return null;
+      const originalLines = expected.stdout.split("\n").slice(before.begin, before.end);
+      const survivingLines = candidate.stdout.split("\n").slice(after.begin, after.end);
+      return originalLines.every((line, index) => {
+        const original = line.trim();
+        const next = survivingLines[index]?.trim();
+        return next === original || (original && next?.startsWith(`${original} `));
+      })
+        ? after
+        : null;
+    }
+    if (before.end <= span.begin) offset = after.end - before.end;
+    else if (before.begin >= span.end) break;
+    else return undefined;
+  }
+  return { begin: span.begin + offset, end: span.end + offset };
+}
+
+/**
+ * A preview can conflict on surrounding changes. Check that the candidate has the
+ * new lines or deletion gap at the edit site, and that its diff from the original
+ * file changes the matching lines or insertion boundary.
+ */
+function containsTextEdits(step, path, target, targetPath) {
+  const before = blobAt(`${step.replay}^`, path);
+  const after = blobAt(step.replay, path);
+  const candidate = blobAt(target, targetPath);
+  if (!before || !after || !candidate || candidate === before) return false;
+  if (after === candidate) return true;
+
+  const edits = changedLines(before, after);
+  const candidateChanges = changedLines(before, candidate);
+  const afterToCandidate = changedLines(after, candidate);
+  if (edits.length === 0 || candidateChanges.length === 0 || afterToCandidate.length === 0) {
+    return false;
+  }
+  let uncertain = false;
+  for (const edit of edits) {
+    const matching = candidateChanges.filter((change) => contains(change.before, edit.before));
+    if (matching.length === 0) return false;
+    const projected = projectLines(edit.after, afterToCandidate, after, candidate);
+    if (projected === null) uncertain = true;
+    else if (!projected || !matching.some((change) => contains(change.after, projected))) {
+      return false;
+    }
+  }
+  return uncertain ? null : true;
+}
+
+/** Traces missing edits to the release itself or to rework along the replay. */
+export function omittedEdits(release, changes, step, earlierSteps) {
+  const changed = new Set(filesOf(step.commit));
+  const renamed = new Map(
+    changes.filter((change) => change.status === "R").map(({ from, to }) => [from, to]),
+  );
+  const destination = (path) => renamed.get(path) ?? path;
+  const missing = new Set(
+    step.files.filter((path) => !changed.has(path) && !changed.has(destination(path))),
+  );
+
+  // A clean no-op on the candidate tree proves it already supplies the edit.
+  // When neighbouring changes obstruct the preview, compare the candidate's
+  // text edits at the original edit site.
+  const previews = new Map();
+  const supplies = (target, path) => {
+    if (!previews.has(target)) {
+      const { tree, conflicts } = previewPick(target, step.replay);
+      previews.set(target, new Set([...conflicts, ...pathsBetween(target, tree)]));
+    }
+    const outstanding = previews.get(target);
+    const targetPath = destination(path);
+    return (
+      (!outstanding.has(path) && !outstanding.has(targetPath)) ||
+      containsTextEdits(step, path, target, targetPath)
+    );
+  };
+
+  const releasePaths = new Set(changes.flatMap(({ from, to }) => [from, to]));
+  const upstream = new Set();
+  const uncertain = new Set();
+  for (const path of missing) {
+    if (!releasePaths.has(path)) continue;
+    const result = supplies(release, path);
+    if (result === true) upstream.add(path);
+    if (result === null) uncertain.add(path);
+  }
+  const reworked = new Set(step.reworkedFiles ?? []);
+  const removed = [];
+  const supplied = [];
+  for (const path of step.edits) {
+    if (!missing.has(path) || upstream.has(path) || uncertain.has(path)) continue;
+    const targetPath = destination(path);
+    if (reworked.has(path) || reworked.has(targetPath)) {
+      removed.push(path);
+    } else if (
+      earlierSteps.some(
+        (earlier) =>
+          (earlier.reworkedFiles.includes(path) || earlier.reworkedFiles.includes(targetPath)) &&
+          supplies(`${earlier.commit}^`, path) === false &&
+          supplies(earlier.commit, path) === true,
+      ) &&
+      supplies(`${step.commit}^`, path) === true
+    ) {
+      supplied.push(path);
+    }
+  }
+  return { empty: changed.size === 0, upstream, removed, supplied, uncertain: [...uncertain] };
+}
+
 export class LayoutError extends Error {
   constructor(operation, diagnostic) {
     super(

@@ -251,8 +251,8 @@ follow.
 ## Bringing in an upstream release
 
 `main` holds upstream's releases exactly as published, and `fork` is the release it is
-built on plus the commits of its differences. To bring in a newer release, run this
-from a checkout of the fork:
+built on plus the commits of its differences. Release intake requires Git 2.40 or newer.
+To bring in a newer release, run this from a checkout of the fork:
 
 ```sh
 node fork/bring-in-release.mjs v3.19.0        # a tag, or the release's commit on main
