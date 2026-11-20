@@ -3,7 +3,8 @@ import {
   writeBundledOfficialMarketplacePartition,
 } from "@zcode/adapters/plugins";
 import type { SharedZCodeCredentialStore } from "@zcode/adapters/auth";
-import type { ProviderEndpointRoutingPort } from "@zcode/contracts";
+import { ZCODE_OFFICIAL_PLUGIN_MARKETPLACE } from "@zcode/contracts";
+import type { PluginLoadOutcome, ProviderEndpointRoutingPort } from "@zcode/contracts";
 
 /** ZCode Sites publishes a project to Z.ai's hosting and works only with a Z.ai account. */
 const SITE_PUBLISHING_PLUGIN = "zcode-site";
@@ -79,4 +80,31 @@ export function publishBundledCatalogue(
 /** An unnamed refresh visits the owner's known marketplaces and skips the bundled catalogue. */
 export function bulkMarketplaceIds(known: readonly { readonly id: string }[]): string[] {
   return refreshableMarketplaces(known, undefined).map(({ id }) => id);
+}
+
+/** Describe the published catalogue without reusing the saved CDN source or its metadata. */
+export function bundledCatalogueSummary(id: string, pluginCount: number) {
+  if (id !== ZCODE_OFFICIAL_PLUGIN_MARKETPLACE) return undefined;
+  return {
+    id,
+    name: id,
+    isOfficial: true,
+    source: { source: "bundled" },
+    description: "Official ZCode plugins bundled with this build.",
+    pluginCount,
+  };
+}
+
+/** Report an absent official plugin before the installer walks its dependencies. */
+export function unavailableBundledPlugin(
+  pluginId: string,
+  source: unknown,
+): PluginLoadOutcome["diagnostics"][number] | undefined {
+  if (source === "filesystem" || source === "sea") return undefined;
+  return {
+    code: "plugin_not_found",
+    message: `This build does not carry ${pluginId}.`,
+    pluginId,
+    severity: "error",
+  };
 }

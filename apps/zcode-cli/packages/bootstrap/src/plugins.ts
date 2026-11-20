@@ -45,8 +45,12 @@ import {
   type PluginExtensionSummary,
   type PluginMarketplaceEntry,
 } from "@zcode/adapters/plugins";
-// fork(zai-silence): select which known marketplaces a bulk refresh can visit
-import { bulkMarketplaceIds } from "./fork/zai-silence/index.js";
+// fork(zai-silence): report the bundled catalogue and select marketplaces for bulk refresh
+import {
+  bulkMarketplaceIds,
+  bundledCatalogueSummary,
+  unavailableBundledPlugin,
+} from "./fork/zai-silence/index.js";
 import type {
   Logger,
   PluginHookDetail,
@@ -67,7 +71,6 @@ import {
 } from "./app/bundled-plugins.js";
 import {
   DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS,
-  OFFICIAL_NODE_REPL_HOST_PLUGIN_NAME,
   OFFICIAL_PLUGIN_DEFINITIONS,
 } from "./app/official-plugin-definitions.js";
 import { getCliStorageRoot, getPluginStorageRoot } from "./app/paths.js";
@@ -274,25 +277,6 @@ export interface ZCodePluginInstallData {
   diagnostics: PluginLoadOutcome["diagnostics"];
 }
 
-/**
- * 市场插件计数只数用户可见条目。
- *
- * node-repl-host 是 Browser Use 与 Computer Use 共用的运行时宿主：它必须留在官方 manifest 里
- * （否则不会被发现、安装、启用），但没有 skill、没有 listing，也不该出现在设置页。计进去会让
- * 显示的插件数比它能列出的条目多一个。
- *
- * 判据故意是「官方市场里的这个具名条目」，而不是「没有 listing 的条目」—— 后者会误伤第三方
- * 市场：自定义 manifest 里的条目本来就可以不带 listing，它们是真实可见的插件。
- */
-function countVisibleMarketplacePlugins(
-  marketplaceId: string,
-  plugins: readonly { name: string }[] | undefined,
-): number | undefined {
-  if (!plugins) return undefined;
-  if (marketplaceId !== ZCODE_OFFICIAL_PLUGIN_MARKETPLACE) return plugins.length;
-  return plugins.filter((entry) => entry.name !== OFFICIAL_NODE_REPL_HOST_PLUGIN_NAME).length;
-}
-
 export async function resolveZCodePlugins(
   options: ResolveZCodePluginsOptions = {},
 ): Promise<PluginLoadOutcome> {
@@ -399,11 +383,10 @@ export async function getZCodePluginsOverview(
       ? loadMarketplaceManifestSync(pluginStorageRoot, record.id)
       : null;
     catalogs.push({
-      summary: toMarketplaceSummaryData(
-        record,
-        manifest?.featured,
-        countVisibleMarketplacePlugins(record.id, manifest?.plugins),
-      ),
+      // fork(zai-silence): report the bundled manifest rather than the saved CDN metadata
+      summary:
+        bundledCatalogueSummary(record.id, manifest?.plugins.length ?? 0) ??
+        toMarketplaceSummaryData(record, manifest?.featured, manifest?.plugins.length),
       entries: manifest?.plugins ?? [],
     });
   }
@@ -729,6 +712,25 @@ async function installZCodeMarketplacePluginLocked(
 ): Promise<ZCodePluginInstallData> {
   const { configResult, pluginStorageRoot, workingDirectory } = await resolvePluginContext(options);
   await ensureDefaultPluginMarketplaces(pluginStorageRoot);
+  const pluginId = `${options.pluginName}@${options.marketplace}`;
+  const isBundledOfficial = options.marketplace === ZCODE_OFFICIAL_PLUGIN_MARKETPLACE;
+  // fork(zai-silence): report an unavailable official plugin before dependency resolution.
+  // 必须先发布内置目录，旧的 CDN 快照不能决定插件是否可安装。
+  if (isBundledOfficial) {
+    await resolveOfficialPluginRoots({
+      storageRoot: pluginStorageRoot,
+      preparation: options.pluginPreparation,
+      logger: options.logger,
+    });
+    const bundledEntry = loadMarketplaceManifestSync(
+      pluginStorageRoot,
+      options.marketplace,
+    )?.plugins.find((entry) => entry.name === options.pluginName);
+    const unavailable = unavailableBundledPlugin(pluginId, bundledEntry?.source);
+    if (unavailable) {
+      return { dependencyClosure: [], installedPlugins: [], diagnostics: [unavailable] };
+    }
+  }
   if (options.dryRun === true) {
     const declarationSource = resolveDeclaredMarketplaceSources({
       configResult,
@@ -773,15 +775,9 @@ async function installZCodeMarketplacePluginLocked(
       ).map(toPluginDiagnostic),
     };
   }
-  const pluginId = `${options.pluginName}@${options.marketplace}`;
-  const bundledEntry = loadMarketplaceManifestSync(
-    pluginStorageRoot,
-    options.marketplace,
-  )?.plugins.find((entry) => entry.name === options.pluginName);
+  // fork(zai-silence): an official entry that reaches restore is from the bundled catalogue
   const isSuppressedBundledOfficial =
-    options.marketplace === ZCODE_OFFICIAL_PLUGIN_MARKETPLACE &&
-    configResult.config.plugins.suppressedBuiltins.includes(pluginId) &&
-    (bundledEntry?.source === "filesystem" || bundledEntry?.source === "sea");
+    isBundledOfficial && configResult.config.plugins.suppressedBuiltins.includes(pluginId);
   if (isSuppressedBundledOfficial) {
     // 内置插件的 filesystem/SEA entry 只是 Catalog 指针，不是普通 Marketplace source。
     // 直接安装必须复用 restore，避免把同一份官方 cache 写进 installed_plugins.json，

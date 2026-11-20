@@ -80,11 +80,11 @@ test("start-up and an interactive session with model choice reach no host but th
   t.after(() => ui.dispose());
   await ui.submit("Answer me.");
   await ui.shows("The session answers.");
-  await ui.submit("/model");
-  await ui.shows("stand-in-model");
-  // Ended, not quit: what is observed is the record, and the driver's Ctrl-C pair is
-  // sometimes read as one press, which leaves the UI asking to confirm.
-  await ui.dispose();
+  // The current model already appears in the status row. The picker opens while typing.
+  assert.ok(!ui.screen().includes("Models"), "the picker starts closed");
+  await ui.type("/model");
+  await ui.shows("Models");
+  assert.equal((await ui.quit()).exitCode, 0);
 
   assert.ok(provider.modelRequests().length > 0, "the session reached the stand-in provider");
   await assertNothingAttempted(home);
@@ -161,8 +161,36 @@ test("the plugin commands reach no host but the stand-ins", async (t) => {
   assert.match(list.output, /documents@zcode-plugins-official/u);
   assert.doesNotMatch(list.output, /zcode-site/u, "site publishing is not bundled");
 
+  const available = launch({ home, command: ["plugins", "list", "--available", "--json"] });
+  t.after(() => available.dispose());
+  const availableResult = await available.outcome;
+  assert.equal(availableResult.exitCode, 0, availableResult.stderr);
+  const official = "zcode-plugins-official";
+  const bundledPlugins = JSON.parse(availableResult.stdout).available.filter(
+    ({ marketplace }) => marketplace === official,
+  );
+  assert.ok(bundledPlugins.some(({ name }) => name === "documents"));
+
   const marketplaces = await zcodeCommand(home, ["plugins", "marketplace", "list"]);
   assert.equal(marketplaces.exitCode, 0, marketplaces.output);
+  assert.ok(
+    marketplaces.output.includes(
+      `- ${official} [official]: ${bundledPlugins.length} plugins\n  source: bundled\n`,
+    ),
+    marketplaces.output,
+  );
+  assert.doesNotMatch(marketplaces.output, /cdn-zcode\.z\.ai/u);
+
+  const marketplaceJson = launch({
+    home,
+    command: ["plugins", "marketplace", "list", "--json"],
+  });
+  t.after(() => marketplaceJson.dispose());
+  const listing = await marketplaceJson.outcome;
+  assert.equal(listing.exitCode, 0, listing.stderr);
+  const bundled = JSON.parse(listing.stdout).find(({ id }) => id === official);
+  assert.deepEqual(bundled.source, { source: "bundled" });
+  assert.equal(bundled.pluginCount, bundledPlugins.length);
 
   const catalogue = await zcodeCommand(home, [
     "plugins",
@@ -173,6 +201,27 @@ test("the plugin commands reach no host but the stand-ins", async (t) => {
   assert.notEqual(catalogue.exitCode, 0, "the official catalogue cannot be fetched");
   assert.match(catalogue.output, /bundled with zcode/u);
 
+  await assertNothingAttempted(home);
+});
+
+test("installing a plugin from outside the bundled catalogue explains its absence", async (t) => {
+  const { home } = await ownerWithProvider(t, []);
+  const plugin = "zcode-site@zcode-plugins-official";
+  const install = await zcodeCommand(home, ["plugins", "install", plugin]);
+  assert.equal(install.exitCode, 1, install.output);
+  assert.match(install.output, /This build does not carry zcode-site@zcode-plugins-official/u);
+  assert.doesNotMatch(install.output, /Dependency not found/u);
+
+  const run = launch({ home, command: ["plugins", "install", plugin, "--json"] });
+  t.after(() => run.dispose());
+  const { exitCode, stderr, stdout } = await run.outcome;
+  assert.equal(exitCode, 1, stderr);
+  const result = JSON.parse(stdout);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.dependencyClosure, []);
+  assert.equal(result.diagnostics.length, 1);
+  assert.equal(result.diagnostics[0].code, "plugin_not_found");
+  assert.equal(result.diagnostics[0].pluginId, plugin);
   await assertNothingAttempted(home);
 });
 

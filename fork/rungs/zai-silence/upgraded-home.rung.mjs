@@ -130,6 +130,12 @@ test("an upgraded home lists only the official plugins bundled by this build", a
     await writeFile(join(catalogueDir, filename), JSON.stringify(downloaded));
   }
 
+  const install = launch({ home, command: ["plugins", "install", `download-only@${official}`] });
+  t.after(() => install.dispose());
+  const refused = await install.outcome;
+  assert.equal(refused.exitCode, 1);
+  assert.match(refused.stderr, /This build does not carry download-only@zcode-plugins-official/u);
+
   const list = launch({ home, command: ["plugins", "list", "--available"], args: ["--json"] });
   t.after(() => list.dispose());
   const { exitCode, stderr, stdout } = await list.outcome;
