@@ -15,15 +15,22 @@ interface BundledMarketplacePartition {
 
 export async function writeBundledOfficialMarketplacePartition(input: {
   manifest: Record<string, unknown>;
+  // fork(zai-silence): the seeder can publish the bundled catalogue on its own
+  publishBundledOnly?: boolean;
   storageRoot: string;
 }): Promise<Record<string, unknown>> {
   assertOfficialManifest(input.manifest);
-  return publishPartition(input.storageRoot, async () => {
-    await writeJsonFile(partitionPath(input.storageRoot, BUNDLED_PARTITION_FILE), {
-      manifest: input.manifest,
-      version: 1,
-    } satisfies BundledMarketplacePartition);
-  });
+  return publishPartition(
+    input.storageRoot,
+    async () => {
+      await writeJsonFile(partitionPath(input.storageRoot, BUNDLED_PARTITION_FILE), {
+        manifest: input.manifest,
+        version: 1,
+      } satisfies BundledMarketplacePartition);
+    },
+    // fork(zai-silence): keep the saved CDN partition out of the published catalogue
+    input.publishBundledOnly ? input.manifest : undefined,
+  );
 }
 
 export async function writeCdnOfficialMarketplacePartition(input: {
@@ -39,11 +46,18 @@ export async function writeCdnOfficialMarketplacePartition(input: {
 async function publishPartition(
   storageRoot: string,
   write: () => Promise<void>,
+  // fork(zai-silence): the bundled partition can be the entire published catalogue
+  bundledOnlyManifest?: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   // 启动 seed 和商店刷新可来自不同进程。分片写入和合并发布同属一次事务，
   // 使用目录文件本身的锁，不递归获取外层安装锁，也不会锁住普通查询。
   return withFileLock(partitionPath(storageRoot, MERGED_MARKETPLACE_FILE), async () => {
     await write();
+    // fork(zai-silence): publish the bundled catalogue under the existing partition lock
+    if (bundledOnlyManifest !== undefined) {
+      await writeJsonFile(partitionPath(storageRoot, MERGED_MARKETPLACE_FILE), bundledOnlyManifest);
+      return bundledOnlyManifest;
+    }
     return rebuildOfficialMarketplace(storageRoot);
   });
 }

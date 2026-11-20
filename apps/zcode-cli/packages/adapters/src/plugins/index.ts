@@ -105,7 +105,8 @@ export {
   writeCdnOfficialMarketplacePartition,
 } from "./official-marketplace.js";
 
-export { isOfficialCatalogue } from "../fork/zai-silence/index.js";
+// fork(zai-silence): share marketplace refresh policy with the bootstrap entry point
+export { refreshableMarketplaces } from "../fork/zai-silence/index.js";
 
 export { getPluginSourceDiagnosticCode } from "./source-errors.js";
 

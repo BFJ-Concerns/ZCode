@@ -3,7 +3,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, readdir, realpath, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import { writeBundledOfficialMarketplacePartition } from "@zcode/adapters";
+// fork(zai-silence): publish the bundled catalogue without upstream's downloaded entries
+import { publishBundledCatalogue } from "../fork/zai-silence/index.js";
 import {
   ZCODE_OFFICIAL_PLUGIN_MARKETPLACE as OFFICIAL_PLUGIN_MARKETPLACE,
   type Logger,
@@ -621,7 +622,8 @@ async function writeOfficialMarketplace(
   storageRoot: string,
   source: OfficialPluginSeedSource,
 ): Promise<void> {
-  await writeBundledOfficialMarketplacePartition({
+  // fork(zai-silence): this build publishes only the catalogue it carries
+  await publishBundledCatalogue({
     manifest: {
       name: OFFICIAL_PLUGIN_MARKETPLACE,
       plugins: await Promise.all(

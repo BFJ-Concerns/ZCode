@@ -30,6 +30,8 @@ function cliPackageDirectories() {
 
 // A package's type check reads the built declarations of the packages it depends on.
 build();
+// fork(zai-silence): exercise Node's request and connection argument forms
+pnpm(["--filter", "@zcode/cli", "exec", "tsx", "--test", "tests/zai-request-guard.test.ts"]);
 pnpm(["--filter", CLI_AND_ITS_DEPENDENCIES, "typecheck"]);
 
 const packages = cliPackageDirectories();

@@ -7,7 +7,9 @@ export interface Destination {
 }
 
 /** Whether a connection to a Z.ai host may be made, and anything the refusal report should add. */
-export type Decision = { readonly allowed: true } | { readonly allowed: false; readonly note?: string };
+export type Decision =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly note?: string };
 
 export interface ConnectionGuardOptions {
   /** Allows a Z.ai host only when the owner has configured it as a model provider. */
