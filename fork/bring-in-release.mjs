@@ -369,7 +369,7 @@ function stepName(step, mark = (text) => text) {
   return `${mark(step.label)}, its ${made} made on ${mark(step.follows)}`;
 }
 
-function stepLine(state, step, earlierRework) {
+function stepLine(state, step, earlierSteps) {
   const parts = [];
   const folded = step.follows ? 0 : step.commits.length - 1;
   const name = `${stepName(step, bold)}${folded > 0 ? ` (${repairs(folded)} folded in)` : ""}`;
@@ -392,7 +392,7 @@ function stepLine(state, step, earlierRework) {
       state.release.commit,
       state.changes,
       step,
-      earlierRework,
+      earlierSteps,
     );
     if (empty && step.files.length > 0 && upstream.size === step.files.length) {
       parts.push("its commit is empty: the release already makes every change it made");
@@ -407,8 +407,10 @@ function stepLine(state, step, earlierRework) {
     if (supplied.length > 0) {
       parts.push(`earlier rework supplied its edits to ${listed(supplied.map(code))}`);
     }
-    if (step.reworkedFiles?.length > 0) parts.push("reworked");
-    for (const path of step.reworkedFiles ?? []) earlierRework.add(path);
+    if (step.reworkedFiles?.length > 0) {
+      parts.push("reworked");
+      earlierSteps.push(step);
+    }
   }
   if (step.proof) parts.push(proofText(step.proof));
   if (step.alsoEdits.length > 0) parts.push(`it also edits ${step.alsoEdits.join(", ")}`);
@@ -929,8 +931,8 @@ async function main() {
     if (!(error instanceof Stop || error instanceof LayoutError)) throw error;
     stopAt(state, error.message);
   }
-  const earlierRework = new Set();
-  const differenceLines = (state.steps ?? []).map((step) => stepLine(state, step, earlierRework));
+  const earlierSteps = [];
+  const differenceLines = (state.steps ?? []).map((step) => stepLine(state, step, earlierSteps));
   if (state.outcome === "running") await moveFork(state);
   if (state.outcome === "moved") {
     try {

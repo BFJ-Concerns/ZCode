@@ -71,8 +71,68 @@ export const pathsBetween = (from, to) =>
   records(git(["diff", "--name-only", "--no-renames", "-z", from, to]));
 export const filesOf = (commit) => pathsBetween(`${commit}^`, commit);
 
+function blobAt(ref, path) {
+  const result = git(["rev-parse", "--verify", "--quiet", `${ref}:${path}`], {
+    allowFailure: true,
+  });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
+/** The old and new line ranges Git changed between two text blobs. */
+function changedLines(from, to) {
+  const diff = git([
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--unified=0",
+    from,
+    to,
+  ]);
+  const ranges = [...diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)];
+  return ranges.map(([, oldStart, oldCount, newStart, newCount]) => ({
+    oldStart: Number(oldStart),
+    oldCount: Number(oldCount ?? 1),
+    newStart: Number(newStart),
+    newCount: Number(newCount ?? 1),
+  }));
+}
+
+/**
+ * Adjacent joins can conflict in a preview even when the insertion is already present.
+ * Compare the original inserted lines to the candidate using Git's line alignment.
+ */
+function retainsInsertions(step, path, target, targetPath) {
+  const before = blobAt(`${step.replay}^`, path);
+  const after = blobAt(step.replay, path);
+  const candidate = blobAt(target, targetPath);
+  if (!before || !after || !candidate) return false;
+  const insertions = changedLines(before, after);
+  if (insertions.length === 0 || insertions.some(({ oldCount }) => oldCount !== 0)) return false;
+  if (after === candidate) return true;
+  const changes = changedLines(after, candidate);
+  if (changes.length === 0) return false;
+  const unchanged = (start, end) =>
+    changes.every(({ oldStart, oldCount }) =>
+      oldCount === 0
+        ? oldStart < start || oldStart >= end
+        : oldStart + oldCount <= start || oldStart > end,
+    );
+  const text = git(["cat-file", "blob", after], { allowFailure: true }).stdout;
+  const lineCount = text.split("\n").length - Number(text.endsWith("\n"));
+  // Keep at least one adjacent line aligned with each insertion so a matching
+  // snippet elsewhere in the file does not by itself count as upstream adoption.
+  return insertions.every(({ newStart, newCount }) => {
+    const end = newStart + newCount - 1;
+    return (
+      (newStart > 1 && unchanged(newStart - 1, end)) ||
+      (end < lineCount && unchanged(newStart, end + 1))
+    );
+  });
+}
+
 /** Traces missing edits to the release itself or to rework along the replay. */
-export function omittedEdits(release, changes, step, earlierRework) {
+export function omittedEdits(release, changes, step, earlierSteps) {
   const changed = new Set(filesOf(step.commit));
   const renamed = new Map(
     changes.filter((change) => change.status === "R").map(({ from, to }) => [from, to]),
@@ -82,26 +142,46 @@ export function omittedEdits(release, changes, step, earlierRework) {
     step.files.filter((path) => !changed.has(path) && !changed.has(destination(path))),
   );
 
-  // An upstream change to the file is only a candidate. If replaying this step on
-  // the release alone still edits the file or conflicts, the release did not supply it.
-  const releasePaths = new Set(changes.flatMap(({ from, to }) => [from, to]));
-  const candidates = [...missing].filter((path) => releasePaths.has(path));
-  const upstream = new Set();
-  if (candidates.length > 0) {
-    const preview = previewPick(release, step.replay);
-    const outstanding = new Set([...preview.conflicts, ...pathsBetween(release, preview.tree)]);
-    for (const path of candidates) {
-      if (!outstanding.has(path) && !outstanding.has(destination(path))) upstream.add(path);
+  // A clean no-op on the candidate tree proves it already supplies the edit.
+  // For adjacent insertions, the line comparison can establish this even if Git's
+  // merge would conflict because the candidate lacks neighbouring fork lines.
+  const previews = new Map();
+  const supplies = (target, path) => {
+    if (!previews.has(target)) {
+      const { tree, conflicts } = previewPick(target, step.replay);
+      previews.set(target, new Set([...conflicts, ...pathsBetween(target, tree)]));
     }
-  }
+    const outstanding = previews.get(target);
+    const targetPath = destination(path);
+    return (
+      (!outstanding.has(path) && !outstanding.has(targetPath)) ||
+      retainsInsertions(step, path, target, targetPath)
+    );
+  };
 
+  const releasePaths = new Set(changes.flatMap(({ from, to }) => [from, to]));
+  const upstream = new Set(
+    [...missing].filter((path) => releasePaths.has(path) && supplies(release, path)),
+  );
   const reworked = new Set(step.reworkedFiles ?? []);
   const removed = [];
   const supplied = [];
   for (const path of step.edits) {
     if (!missing.has(path) || upstream.has(path)) continue;
-    if (reworked.has(path) || reworked.has(destination(path))) removed.push(path);
-    else if (earlierRework.has(path) || earlierRework.has(destination(path))) supplied.push(path);
+    const targetPath = destination(path);
+    if (reworked.has(path) || reworked.has(targetPath)) {
+      removed.push(path);
+    } else if (
+      earlierSteps.some(
+        (earlier) =>
+          (earlier.reworkedFiles.includes(path) || earlier.reworkedFiles.includes(targetPath)) &&
+          !supplies(`${earlier.commit}^`, path) &&
+          supplies(earlier.commit, path),
+      ) &&
+      supplies(`${step.commit}^`, path)
+    ) {
+      supplied.push(path);
+    }
   }
   return { empty: changed.size === 0, upstream, removed, supplied };
 }
