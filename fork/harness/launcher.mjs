@@ -56,12 +56,13 @@ const OUTPUT_POLL_MS = 20;
  * @param {import("./owner-home.mjs").OwnerHome} options.home
  * @param {string} [options.prompt]
  * @param {string[]} [options.command]
- *   A command to run in place of a prompt, e.g. `["models"]`. It prints its own
- *   output rather than stream-json, so read `stdout` and not `events`.
+ *   The arguments for a command run, e.g. `["models"]`. Include any command-line
+ *   options the invocation needs. Read command output from `stdout`.
  * @param {"stream-json" | "json" | "text"} [options.outputFormat]
  *   The `--output-format` a prompt runs with; stream-json unless a rung says otherwise.
  * @param {string[]} [options.args]  Further arguments, placed before the prompt or command.
- * @param {string} [options.cwd]     Defaults to the home's empty workspace.
+ * @param {string} [options.cwd]     The process working directory, also passed as
+ *   `--cwd` in prompt runs. Defaults to the home's empty workspace.
  * @returns {Run}
  */
 export function launch({
@@ -87,7 +88,7 @@ export function launch({
   const child = spawn(
     process.execPath,
     command
-      ? [ZCODE_ENTRY, "--cwd", cwd, "--no-color", ...args, ...command]
+      ? [ZCODE_ENTRY, ...args, ...command]
       : [
           ZCODE_ENTRY,
           "--cwd",
