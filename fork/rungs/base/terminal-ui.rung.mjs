@@ -40,7 +40,9 @@ function zcodeProcesses() {
       try {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")) return false;
-        return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").includes(ZCODE_ENTRY);
+        // On Linux, setting the process title replaces the original argument list in /proc.
+        const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+        return args[0] === "zcode-cli" || args.includes(ZCODE_ENTRY);
       } catch {
         return false;
       }

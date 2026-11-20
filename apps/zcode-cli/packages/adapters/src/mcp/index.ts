@@ -1546,6 +1546,8 @@ class NodeMcpAdapter implements McpPort {
       config.type === "stdio" ? "process_start_failed" : "network_unreachable";
 
     try {
+      // fork(base): a cancelled connection must not begin asynchronous preparation
+      signal.throwIfAborted();
       // 根因（MR !3089 评审 CR-02）：首次 stdio 连接要先准备 node fallback（文件 IO），原先在
       // createTransport 里裸等，不受连接超时与取消约束；IO 卡住时连接会一直停在 connecting。
       const nodeFallback =
@@ -1567,6 +1569,9 @@ class NodeMcpAdapter implements McpPort {
         nodeFallback,
       );
       transport = transportBundle.transport;
+      // fork(base): shutdown can cancel during transport preparation. Starting negotiation
+      // after that would leave its promise unobserved by withTimeout.
+      signal.throwIfAborted();
       getRecentStderr = this.attachStdioLogging(name, transport);
       client = new Client(
         {

@@ -2,10 +2,9 @@
 
 This checkout is ZCode as upstream ships it, plus a small number of differences. The
 fork builds, runs and proves only the terminal UI and the command line: `@zcode/cli`
-under `apps/zcode-cli`, the workspace packages it depends on, and the document plugins
-it bundles. The desktop app, the
-browser interface and the mobile app stay in the tree exactly as upstream ships them
-and are never built here.
+under `apps/zcode-cli`, the workspace packages it depends on, and its bundled
+plugins. The desktop app, the browser interface and the mobile app stay in the tree
+exactly as upstream ships them and are never built here.
 
 This directory holds everything about the fork that is not a difference itself: these
 rules, the build, the two commands that gate a change, the harness the proofs run on,
@@ -18,8 +17,13 @@ node fork/build.mjs
 ```
 
 installs the dependencies of `@zcode/cli` from the lockfile and builds it with the
-packages it depends on and the document plugins it bundles. It needs Node and pnpm at the versions in `mise.toml`, and the
-npm registry (or a pnpm store that already has the packages) the first time.
+packages it depends on. It also builds the document viewers, Browser Use's client and
+shared Node REPL host, and the Android and iOS simulator servers. Content-only plugins
+seed directly from the checkout. The build needs Node and pnpm at the versions in
+`mise.toml`, and the npm registry (or a pnpm store that already has the packages) the
+first time.
+
+Every entry in the bundled catalogue seeds a complete local cache in a fresh CLI home.
 
 The result runs in place and is executable:
 
@@ -137,6 +141,10 @@ node fork/rungs.mjs --no-build base    # against the build already in place
 A rung file is `fork/rungs/<difference>/<subject>.rung.mjs`: plain JavaScript using
 `node:test`, importing nothing but Node and `fork/harness/`. Fixtures that only one
 difference needs (a listing in some provider's shape, say) sit beside its rungs.
+`fork/rungs/base/bundled-plugins.rung.mjs` is the one exception: it also reads
+upstream's release recipe, `apps/zcode-cli/packages/cli/scripts/sea-official-plugin-assets.mjs`,
+for the files each bundled plugin must carry, so that a plugin a release adds is held
+to what upstream says of it.
 `fork/rungs/base/receivers.rung.mjs` is the one to copy, and
 `fork/rungs/base/terminal-ui.rung.mjs` the one for a rung that drives the terminal UI.
 
@@ -212,8 +220,9 @@ stand-in knows when no `zcode` is left to call it.
 ### Z.ai silence
 
 The official marketplace list reports a bundled source and counts the entries in the
-catalogue that ships with the build. An explicit install from that catalogue reports a
-plugin it does not carry as unavailable in this build.
+catalogue that ships with the build. The base bundled-plugins rung checks the files in
+the cache of every entry that the CLI offers. An explicit install from that catalogue
+reports a plugin it does not carry as unavailable in this build.
 
 An unnamed marketplace refresh updates the owner's known catalogues and omits the bundled
 official catalogue from both its work and its diagnostics. An explicit request to refresh
