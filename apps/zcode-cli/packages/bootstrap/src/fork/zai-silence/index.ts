@@ -1,9 +1,12 @@
 import {
+  loadMarketplaceManifestSync,
   refreshableMarketplaces,
   writeBundledOfficialMarketplacePartition,
 } from "@zcode/adapters/plugins";
 import type { SharedZCodeCredentialStore } from "@zcode/adapters/auth";
+import { ZCODE_OFFICIAL_PLUGIN_MARKETPLACE } from "@zcode/contracts";
 import type { ProviderEndpointRoutingPort } from "@zcode/contracts";
+import type { ZCodePluginInstallData } from "../../plugins.js";
 
 /** ZCode Sites publishes a project to Z.ai's hosting and works only with a Z.ai account. */
 const SITE_PUBLISHING_PLUGIN = "zcode-site";
@@ -79,4 +82,49 @@ export function publishBundledCatalogue(
 /** An unnamed refresh visits the owner's known marketplaces and skips the bundled catalogue. */
 export function bulkMarketplaceIds(known: readonly { readonly id: string }[]): string[] {
   return refreshableMarketplaces(known, undefined).map(({ id }) => id);
+}
+
+/** Describe the published catalogue without reusing the saved CDN source or its metadata. */
+export function bundledCatalogueSummary(id: string, pluginCount: number) {
+  if (id !== ZCODE_OFFICIAL_PLUGIN_MARKETPLACE) return undefined;
+  return {
+    id,
+    name: id,
+    isOfficial: true,
+    source: { source: "bundled" },
+    description: "Official ZCode plugins bundled with this build.",
+    pluginCount,
+  };
+}
+
+/** For official installs, check the bundled catalogue after preparing the current build's seed. */
+export async function checkBundledCatalogueInstall(input: {
+  marketplace: string;
+  pluginName: string;
+  storageRoot: string;
+  prepare: () => Promise<unknown>;
+}): Promise<ZCodePluginInstallData | undefined> {
+  const { marketplace, pluginName, storageRoot, prepare } = input;
+  if (marketplace !== ZCODE_OFFICIAL_PLUGIN_MARKETPLACE) return undefined;
+
+  // A saved upstream catalogue can still contain download-only entries before seeding.
+  await prepare();
+  const source = loadMarketplaceManifestSync(storageRoot, marketplace)?.plugins.find(
+    (entry) => entry.name === pluginName,
+  )?.source;
+  if (source === "filesystem" || source === "sea") return undefined;
+
+  const pluginId = `${pluginName}@${marketplace}`;
+  return {
+    dependencyClosure: [],
+    installedPlugins: [],
+    diagnostics: [
+      {
+        code: "plugin_not_found",
+        message: `This build does not carry ${pluginId}.`,
+        pluginId,
+        severity: "error",
+      },
+    ],
+  };
 }
