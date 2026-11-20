@@ -48,9 +48,15 @@ async function rungFiles() {
     .sort();
 }
 
+/** Colour and other terminal controls, which the reporter adds when colour is forced. */
+// oxlint-disable-next-line no-control-regex -- the controls begin with ESC
+const TERMINAL_CONTROLS = /\x1b\[[0-9;?]*[A-Za-z]/g;
+
 /** What the spec reporter counts in its closing summary, e.g. `ℹ skipped 1`. */
 const summaryCount = (output, label) =>
-  Number(new RegExp(`^ℹ ${label} (\\d+)$`, "m").exec(output)?.[1] ?? 0);
+  Number(
+    new RegExp(`^ℹ ${label} (\\d+)$`, "m").exec(output.replace(TERMINAL_CONTROLS, ""))?.[1] ?? 0,
+  );
 
 /** Runs one rung file in its own sandbox; resolves with its output and whether it passed. */
 function runSandboxed(file) {
