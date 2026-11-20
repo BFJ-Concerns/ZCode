@@ -278,7 +278,7 @@ one. The replay stops at the first difference that Git cannot pick or that fails
   Git's diagnostic. A difference that failed a gate is the branch's last commit.
   The account names the gate log and any files the gates left behind and cleared away.
 
-The process exits 0 when it moved `fork`, 1 when the replay stopped at a difference,
+The process exits 0 when it moved `fork`, 1 when preparation or replay stopped,
 2 when it refused to start or resume, and 3 when the proven result waits on its branch
 for the owner. Both a checked-out and an unchecked branch must still point to the
 commit the replay started from when Git locks the reference for the move.
@@ -305,6 +305,12 @@ labels it with each. A later commit that changes two differences together cannot
 attributed to either, so the process stops before replaying anything and names the
 commit. Only markers in files upstream ships count: text in `fork/` or a `src/fork/`
 directory is never read as a join.
+
+The tool first lays out the steps on the old upstream base. Temporary commits made
+during layout are unsigned. Replay onto the new release uses the repository's
+signing settings. If Git fails during layout, the account includes its diagnostic.
+The temporary worktree is removed, so after fixing the cause, rerun the release
+command to prepare the steps again.
 
 Fix the problem in the replay worktree. For a conflict, resolve and stage the files
 before running `git cherry-pick --continue`. For another Git failure, fix the cause

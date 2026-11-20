@@ -13,21 +13,78 @@ export function git(args, { cwd = process.cwd(), allowFailure = false } = {}) {
   return allowFailure ? result : result.stdout.trimEnd();
 }
 
-export function cherryPick(cwd, commit) {
+const gitDiagnostic = (result) =>
+  result.stderr?.trim() ||
+  result.stdout?.trim() ||
+  result.error?.message ||
+  (result.signal
+    ? `Git was stopped by ${result.signal}.`
+    : `Git exited with status ${result.status}.`);
+
+export function cherryPick(cwd, commit, { sign = true } = {}) {
   // --keep-redundant-commits is --empty=keep under the name Git before 2.45 knows.
-  const result = git(["cherry-pick", "--allow-empty", "--keep-redundant-commits", commit], {
-    cwd,
-    allowFailure: true,
-  });
+  const args = ["cherry-pick", "--allow-empty", "--keep-redundant-commits"];
+  if (!sign) args.push("--no-gpg-sign");
+  const result = git([...args, commit], { cwd, allowFailure: true });
   if (result.status === 0) return { ok: true };
   const unmerged = git(["diff", "--name-only", "--diff-filter=U"], { cwd, allowFailure: true });
   const conflicts = unmerged.status === 0 ? unmerged.stdout.split("\n").filter(Boolean) : [];
-  const diagnostic =
-    result.stderr?.trim() ||
-    result.stdout?.trim() ||
-    result.error?.message ||
-    `git cherry-pick ended with ${result.signal ?? `exit status ${result.status}`}.`;
-  return { ok: false, conflicts, diagnostic };
+  return { ok: false, conflicts, diagnostic: gitDiagnostic(result) };
+}
+
+export class LayoutError extends Error {
+  constructor(operation, diagnostic) {
+    super(
+      `Git could not lay out the replay while ${operation}. Fix the Git error and run the release command again.\n\n` +
+        diagnostic.replace(/^/gm, "    "),
+    );
+  }
+}
+
+function layoutGit(cwd, args, operation) {
+  const result = git(args, { cwd, allowFailure: true });
+  if (result.status !== 0) throw new LayoutError(operation, gitDiagnostic(result));
+  return result.stdout.trimEnd();
+}
+
+/** Reuses a commit already in position. Only conflicts defer a repair during layout. */
+export function pickForLayout(cwd, commit) {
+  const operation = `placing \`${commit.subject}\``;
+  const head = layoutGit(cwd, ["rev-parse", "HEAD"], operation);
+  if (layoutGit(cwd, ["rev-parse", `${commit.sha}^`], operation) === head) {
+    layoutGit(cwd, ["checkout", "--quiet", "--detach", commit.sha], operation);
+    return true;
+  }
+  // 布局提交只是重放的输入。签名只在新版本上的实际重放提交中执行。
+  const picked = cherryPick(cwd, commit.sha, { sign: false });
+  if (picked.ok) return true;
+  if (picked.conflicts.length === 0) throw new LayoutError(operation, picked.diagnostic);
+  layoutGit(cwd, ["cherry-pick", "--abort"], operation);
+  return false;
+}
+
+/** Folds the checkout's last `count` commits into the first, with their messages. */
+export function foldForLayout(cwd, count, commits) {
+  if (count < 2) return;
+  const operation = `folding repairs for \`${commits[0].subject}\``;
+  const message = commits
+    .map((commit) => layoutGit(cwd, ["log", "-1", "--format=%B", commit.sha], operation).trim())
+    .join("\n\n");
+  layoutGit(cwd, ["reset", "--quiet", "--soft", `HEAD~${count - 1}`], operation);
+  layoutGit(
+    cwd,
+    [
+      "commit",
+      "--quiet",
+      "--no-verify",
+      "--no-gpg-sign",
+      "--allow-empty",
+      "--amend",
+      "--message",
+      message,
+    ],
+    operation,
+  );
 }
 
 export const refTip = (ref) =>

@@ -42,7 +42,7 @@
  * away. Run the same release command again to retry an unstarted pick or gate the
  * completed commit and carry on.
  *
- * Exits 0 when the fork moves, 1 when the replay stops at a difference, 2 when it
+ * Exits 0 when the fork moves, 1 when preparation or replay stops, 2 when it
  * refuses to start or resume, and 3 when the proven result waits on its branch.
  */
 
@@ -52,9 +52,12 @@ import { parseArgs } from "node:util";
 import {
   cherryPick,
   cleanUpReplay,
+  foldForLayout,
   forkCheckout,
   git,
+  LayoutError,
   moveReleaseRef,
+  pickForLayout,
   refIsSet,
   refTip,
   run,
@@ -211,33 +214,6 @@ function cliPackages(worktree) {
 // Replay and gates
 
 /**
- * Puts one of the fork's commits on top of the worktree's checkout: the commit itself when
- * it already sits there, a cherry-pick of it otherwise. Leaves the checkout as it was and
- * answers false when it does not apply.
- */
-function pick(worktree, commit) {
-  if (git(["rev-parse", `${commit.sha}^`]) === HEAD(worktree)) {
-    git(["checkout", "--quiet", "--detach", commit.sha], { cwd: worktree });
-    return true;
-  }
-  if (cherryPick(worktree, commit.sha).ok) return true;
-  if (cherryPickInProgress(worktree)) git(["cherry-pick", "--abort"], { cwd: worktree });
-  return false;
-}
-
-/** Makes the checkout's last `count` commits one, under the messages of `commits`. */
-function squash(worktree, count, commits) {
-  if (count < 2) return;
-  const message = commits
-    .map((commit) => git(["log", "-1", "--format=%B", commit.sha]).trim())
-    .join("\n\n");
-  git(["reset", "--quiet", "--soft", `HEAD~${count - 1}`], { cwd: worktree });
-  git(["commit", "--quiet", "--no-verify", "--allow-empty", "--amend", "--message", message], {
-    cwd: worktree,
-  });
-}
-
-/**
  * Lays the fork out on its upstream base as the steps it is replayed in, one commit each.
  * Each difference is a step, its repairs folded in. A repair that does not apply directly
  * after its difference was made on top of a later one, so it becomes a step of its own
@@ -261,7 +237,7 @@ function layOut(worktree, differences) {
     const last = steps.at(-1);
     if (last.follows === follows && last.label === repair.difference.label) {
       last.commits.push(repair.commit);
-      squash(worktree, 2, last.commits);
+      foldForLayout(worktree, 2, last.commits);
       last.replay = HEAD(worktree);
     } else {
       steps.push({
@@ -275,7 +251,7 @@ function layOut(worktree, differences) {
   };
   for (const difference of differences) {
     const [first, ...repairs] = difference.commits;
-    if (!pick(worktree, first)) {
+    if (!pickForLayout(worktree, first)) {
       throw new Stop(
         `${difference.label} does not apply on the fork's upstream base without the ` +
           "differences after it, so the fork cannot be replayed one difference at a time.",
@@ -284,10 +260,10 @@ function layOut(worktree, differences) {
     const folded = [first];
     for (const commit of repairs) {
       const repair = { difference, commit };
-      if (!repairWaits(difference) && pick(worktree, commit)) folded.push(commit);
+      if (!repairWaits(difference) && pickForLayout(worktree, commit)) folded.push(commit);
       else wait(repair);
     }
-    squash(worktree, folded.length, folded);
+    foldForLayout(worktree, folded.length, folded);
     steps.push({
       label: difference.label,
       alsoEdits: difference.alsoEdits,
@@ -300,7 +276,7 @@ function layOut(worktree, differences) {
       placed = false;
       for (let index = 0; index < waiting.length; ) {
         const repair = waiting[index];
-        if (!repairWaits(repair.difference, index) && pick(worktree, repair.commit)) {
+        if (!repairWaits(repair.difference, index) && pickForLayout(worktree, repair.commit)) {
           waiting.splice(index, 1);
           placeRepair(repair, difference.label);
           placed = true;
@@ -939,7 +915,7 @@ async function main() {
       process.stderr.write(`${error.message}\n`);
       return 2;
     }
-    if (!(error instanceof Stop)) throw error;
+    if (!(error instanceof Stop || error instanceof LayoutError)) throw error;
     stopAt(state, error.message);
   }
   if (state.outcome === "running") await moveFork(state);
