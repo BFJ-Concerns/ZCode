@@ -40,7 +40,7 @@ const SIGNAL_EXIT_CODES: Partial<Record<NodeJS.Signals, number>> = {
 /** A turn cancelled with no signal behind it reports as an interrupt does. */
 const CANCELLED_EXIT_CODE = 130;
 
-/** Where and how a closing result is printed, and what can still wake the model. */
+/** Where and how a closing result is printed, and what the run has started. */
 export interface ClosingOutput {
   stdout: WriteStream;
   stderr: WriteStream;
@@ -51,10 +51,14 @@ export interface ClosingOutput {
   runtime?: unknown;
   /** Aborted when the run is cancelled; the wait ends with it. */
   signal?: AbortSignal;
+  /** Detaches the run's event stream, so that nothing is written after the result. */
+  stopEvents?: () => void;
 }
 
+/** Closes something the run started; a stopped run calls every one at once. */
+type RunCloser = () => Promise<void> | void;
+
 interface TurnEnding {
-  turnId: string | undefined;
   outcome: RunOutcome;
   response?: string;
   error?: string;
@@ -64,57 +68,82 @@ interface TurnEnding {
  * What a non-interactive run knows about how it ended, and how it says so.
  *
  * The run's last turn decides: a run finishes when its last turn completes, fails when
- * that turn fails or the run cannot start one, and is cancelled when a signal stops it,
- * whichever turn was in progress. A run whose background work woke the model several
- * times is judged by the last of those turns, not the first.
+ * that turn fails or the run cannot start one, and is cancelled when that turn is
+ * cancelled or a signal stops it, whichever turn was in progress. A run whose background
+ * work woke the model several times is judged by the last of those turns, not the first.
+ *
+ * A run prints exactly one result, and it is the last thing the run writes on stdout:
+ * whichever path claims it first detaches the event stream and prints it, and every other
+ * path then prints nothing.
  */
 export interface RunEnding {
   /** Records the signal that is stopping the run. */
   cancelledBy: (signal: NodeJS.Signals) => void;
+  /** Whether a signal is stopping the run. */
+  wasStopped: () => boolean;
   /** A session-event sink that remembers how each of the run's own turns ended. */
   observerFor: (sessionId: string) => (event: SessionEvent) => void;
-  /** The text of each of the run's own turns that ended after `firstTurnId`, in order. */
-  laterTurnResponses: (firstTurnId: string | undefined) => string[];
+  /**
+   * The answer of each of the run's own turns that gave one, in the order the turns
+   * ended; `[fallback]` when no turn gave one (a command answered without a model turn, or
+   * one that only recorded its input) and `fallback` is not blank.
+   */
+  answers: (fallback: string) => string[];
   /** The fields the closing result carries. */
   fields: () => RunEndingFields;
   exitCode: () => number;
   /** In text output, says on stderr how a run that did not finish ended. */
   reportInText: (stderr: WriteStream) => void;
   /**
+   * Claims the run's one result for a caller that prints it itself. True for the first
+   * claim, which detaches the event stream through `stopEvents` before returning; false
+   * once the result has been claimed, and the caller then prints nothing.
+   */
+  claimResult: (stopEvents?: () => void) => boolean;
+  /**
+   * Prints the run's result with `answer` as its response, unless it has already been
+   * printed, and returns the exit status. In text output the answer goes to stdout and a
+   * run that did not finish says so on stderr.
+   */
+  close: (output: ClosingOutput, answer: string | undefined) => number;
+  /**
    * Closes a run that ended in an error: records the error, waits while anything the run
    * started can still wake the model (a failed turn does not end a run whose background
-   * work is still running), prints the closing result and returns the exit status.
-   * Without `runtime` nothing can wake the model and the run closes at once.
+   * work is still running), prints the result and returns the exit status. Without
+   * `runtime` nothing can wake the model and the run closes at once. Text output does not
+   * repeat a failure: the caller has reported the error it caught, so only a turn woken
+   * since then that failed is reported again.
    */
   closeAfterError: (cause: unknown, output: ClosingOutput) => Promise<number>;
   /**
+   * Ends a run a signal stopped: prints its result at once, without waiting for the turn
+   * in progress to give up, and then runs every closer together, so that the time the
+   * process has left goes to closing what the run started.
+   */
+  closeStoppedRun: (output: ClosingOutput, closers: RunCloser[]) => Promise<void>;
+  /**
    * Waits while anything the run started can still wake the model: a background
    * command, subagent or workflow still running, or a turn one of them queued. Has no
-   * time limit; ends at once when the run is cancelled. Settles with the text of the
-   * last of the run's turns that finished while it waited, if one did.
+   * time limit; ends at once when the run is cancelled.
    */
-  waitWhileWakeable: (runtime: unknown, signal: AbortSignal) => Promise<string | undefined>;
-  /** Prints a closing result for `response` in a JSON format, and returns the exit status. */
-  writeResult: (
-    output: Omit<ClosingOutput, "runtime" | "signal">,
-    response: string,
-  ) => number;
-  /**
-   * Runs `cleanup` once the run has printed its result, so that a signal arriving while
-   * the run is waiting does not end the process before the result says it was cancelled.
-   */
-  afterResult: (cleanup: () => Promise<void>) => Promise<void>;
-  /** Marks the run's result as printed, or the run as past printing one. */
-  resultPrinted: () => void;
+  waitWhileWakeable: (runtime: unknown, signal: AbortSignal) => Promise<void>;
 }
 
 export const createRunEnding = (): RunEnding => {
   const turns: TurnEnding[] = [];
-  const printed = Promise.withResolvers<void>();
   let signal: NodeJS.Signals | undefined;
   let error: string | undefined;
+  let claimed = false;
 
   const lastTurn = (): TurnEnding | undefined => turns.at(-1);
+
+  const answers = (fallback: string): string[] => {
+    const given = turns.flatMap((turn) =>
+      turn.response !== undefined && turn.response.trim().length > 0 ? [turn.response] : [],
+    );
+    if (given.length > 0) return given;
+    return fallback.trim().length > 0 ? [fallback] : [];
+  };
 
   const fields = (): RunEndingFields => {
     if (signal) return { outcome: "cancelled" };
@@ -143,40 +172,55 @@ export const createRunEnding = (): RunEnding => {
     if (ending.outcome === "cancelled") stderr.write(`Cancelled${signal ? ` by ${signal}` : ""}\n`);
   };
 
-  const waitWhileWakeable = async (
-    runtime: unknown,
-    abortSignal: AbortSignal,
-  ): Promise<string | undefined> => {
-    const facts = readHeadlessRuntimeFacts(runtime);
-    if (!facts || signal) return undefined;
-    const endedBefore = turns.length;
-    await waitForHeadlessWorkflowSettle({ runtime: facts, signal: abortSignal });
-    const woken = turns.slice(endedBefore).findLast((turn) => turn.outcome === "finished");
-    return woken?.response;
+  const claimResult = (stopEvents?: () => void): boolean => {
+    if (claimed) return false;
+    claimed = true;
+    stopEvents?.();
+    return true;
   };
 
-  const writeResult = (
-    output: Omit<ClosingOutput, "runtime" | "signal">,
-    response: string | undefined,
+  /**
+   * Prints the result if it is still unclaimed. `alreadyReported` says the caller has
+   * reported a failure on stderr, which text output then does not repeat.
+   */
+  const printResult = (
+    output: ClosingOutput,
+    answer: string | undefined,
+    alreadyReported: boolean,
   ): number => {
-    const result = {
-      ...(output.sessionId ? { sessionId: output.sessionId } : {}),
-      ...(output.traceId ? { traceId: output.traceId } : {}),
-      ...(response === undefined ? {} : { response }),
-      ...fields(),
-    };
-    if (output.format.streams) {
-      output.stdout.write(`${JSON.stringify({ type: "result", ...result })}\n`);
-    } else {
-      output.stdout.write(formatJson(result));
+    if (!claimResult(output.stopEvents)) return exitCode();
+    if (output.format.streams || output.format.json) {
+      const result = {
+        ...(output.sessionId ? { sessionId: output.sessionId } : {}),
+        ...(output.traceId ? { traceId: output.traceId } : {}),
+        ...(answer === undefined ? {} : { response: answer }),
+        ...fields(),
+      };
+      output.stdout.write(
+        output.format.streams
+          ? `${JSON.stringify({ type: "result", ...result })}\n`
+          : formatJson(result),
+      );
+      return exitCode();
     }
+    if (answer !== undefined) output.stdout.write(`${answer}\n`);
+    if (!(alreadyReported && fields().outcome === "failed")) reportInText(output.stderr);
     return exitCode();
+  };
+
+  const lastAnswer = (fallback = ""): string | undefined => answers(fallback).at(-1);
+
+  const waitWhileWakeable = async (runtime: unknown, abortSignal: AbortSignal): Promise<void> => {
+    const facts = readHeadlessRuntimeFacts(runtime);
+    if (!facts || signal) return;
+    await waitForHeadlessWorkflowSettle({ runtime: facts, signal: abortSignal });
   };
 
   return {
     cancelledBy: (stoppedBy) => {
       signal ??= stoppedBy;
     },
+    wasStopped: () => signal !== undefined,
     observerFor: (sessionId) => (event) => {
       // The resident subscription also carries the events of subagents and workflow
       // actors; only the run's own session has turns that decide how the run ended.
@@ -184,41 +228,33 @@ export const createRunEnding = (): RunEnding => {
       const ending = turnEndingOf(event);
       if (ending) turns.push(ending);
     },
-    laterTurnResponses: (firstTurnId) =>
-      turns
-        .filter((turn) => turn.turnId !== firstTurnId && turn.outcome === "finished")
-        .flatMap((turn) =>
-          turn.response !== undefined && turn.response.trim().length > 0 ? [turn.response] : [],
-        ),
+    answers,
     fields,
     exitCode,
     reportInText,
+    claimResult,
+    close: (output, answer) => printResult(output, answer, false),
     closeAfterError: async (cause, output) => {
-      // A turn that failed has already said why in its own event, and a turn its
-      // background work wakes may still finish the run. Any other error is the run's own.
-      if (lastTurn()?.outcome !== "failed") error ??= messageOf(cause);
+      // A turn that failed has already said why in its own event, and a cancelled turn is
+      // a cancelled run, not a failed one; a turn its background work wakes may still
+      // finish the run. Any other error is the run's own.
+      const last = lastTurn();
+      if (last?.outcome !== "failed" && last?.outcome !== "cancelled") {
+        error ??= messageOf(cause);
+      }
+      const endedBefore = turns.length;
       if (output.runtime !== undefined && output.signal) {
         await waitWhileWakeable(output.runtime, output.signal);
       }
-      const ending = fields();
-      const response = ending.outcome === "finished" ? lastTurn()?.response : undefined;
-      if (output.format.streams || output.format.json) {
-        return writeResult(output, response);
-      }
-      if (response !== undefined) output.stdout.write(`${response}\n`);
-      // The caller has already reported the error it caught; say only what it has not.
-      if (ending.outcome !== "failed" || ending.error !== messageOf(cause)) {
-        reportInText(output.stderr);
-      }
-      return exitCode();
+      // The caller reported the failure it caught; a turn woken since then that failed is news.
+      const failedSince = turns.length > endedBefore && lastTurn()?.outcome === "failed";
+      return printResult(output, lastAnswer(), !failedSince);
     },
-    writeResult: (output, response) => writeResult(output, response),
+    closeStoppedRun: async (output, closers) => {
+      printResult(output, lastAnswer(), false);
+      await Promise.allSettled(closers.map(async (closeOne) => await closeOne()));
+    },
     waitWhileWakeable,
-    afterResult: async (cleanup) => {
-      await printed.promise;
-      await cleanup();
-    },
-    resultPrinted: () => printed.resolve(),
   };
 };
 
@@ -226,21 +262,20 @@ const messageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
 const turnEndingOf = (event: SessionEvent): TurnEnding | undefined => {
-  const turnId = event.turnId === undefined ? undefined : String(event.turnId);
   if (event.type === SessionEventType.TurnError) {
     const { error } = event.payload as TurnErrorPayload;
-    return { turnId, outcome: "failed", error: describeTurnError(error) };
+    return { outcome: "failed", error: describeTurnError(error) };
   }
   if (event.type !== SessionEventType.TurnComplete) return undefined;
   const { response, resultType } = event.payload as TurnCompletePayload;
   switch (resultType) {
     case "success":
-      return { turnId, outcome: "finished", response };
+      return { outcome: "finished", response };
     case "cancelled":
-      return { turnId, outcome: "cancelled", response };
+      return { outcome: "cancelled", response };
     default:
       // error_max_turns, error_max_budget and the like: the turn stopped short of its work.
-      return { turnId, outcome: "failed", response, error: `The turn ended with ${resultType}.` };
+      return { outcome: "failed", response, error: `The turn ended with ${resultType}.` };
   }
 };
 

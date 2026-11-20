@@ -31,7 +31,9 @@ const OUTPUT_POLL_MS = 20;
  * @property {string} stdout
  * @property {string} stderr
  * @property {any[]} events             Every JSON line printed on stdout, in order.
- * @property {any} result               The closing `type: "result"` line, or `undefined`.
+ * @property {any} result
+ *   The closing result: the `type: "result"` line in stream-json output, the object
+ *   stdout holds in json output, and `undefined` in text output or when there is none.
  *
  * @typedef {object} Run
  * @property {number} pid
@@ -56,11 +58,20 @@ const OUTPUT_POLL_MS = 20;
  * @param {string[]} [options.command]
  *   A command to run in place of a prompt, e.g. `["models"]`. It prints its own
  *   output rather than stream-json, so read `stdout` and not `events`.
+ * @param {"stream-json" | "json" | "text"} [options.outputFormat]
+ *   The `--output-format` a prompt runs with; stream-json unless a rung says otherwise.
  * @param {string[]} [options.args]  Further arguments, placed before the prompt or command.
  * @param {string} [options.cwd]     Defaults to the home's empty workspace.
  * @returns {Run}
  */
-export function launch({ home, prompt, command, args = [], cwd = home.workspace }) {
+export function launch({
+  home,
+  prompt,
+  command,
+  outputFormat = "stream-json",
+  args = [],
+  cwd = home.workspace,
+}) {
   requireSandbox();
   if (!existsSync(ZCODE_ENTRY)) {
     throw new Error(`${ZCODE_ENTRY} is not built; run \`node fork/build.mjs\` first.`);
@@ -82,7 +93,7 @@ export function launch({ home, prompt, command, args = [], cwd = home.workspace 
           "--cwd",
           cwd,
           "--output-format",
-          "stream-json",
+          outputFormat,
           "--no-color",
           ...args,
           "--prompt",
@@ -151,7 +162,10 @@ export function launch({ home, prompt, command, args = [], cwd = home.workspace 
         stdout,
         stderr,
         events,
-        result: events.findLast((event) => event?.type === "result"),
+        result:
+          outputFormat === "json"
+            ? parseJsonDocument(stdout)
+            : events.findLast((event) => event?.type === "result"),
       });
     });
   });
@@ -201,6 +215,14 @@ function fileReader(path) {
     },
     close: () => closeSync(fd),
   };
+}
+
+function parseJsonDocument(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 function parseJsonLine(line) {
