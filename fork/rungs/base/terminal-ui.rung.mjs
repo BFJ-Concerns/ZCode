@@ -119,3 +119,18 @@ test("a wait on the provider fails at once when zcode exits without calling it",
   );
   assert.equal(run.running(), false);
 });
+
+test("a wait on the provider holds while a zcode launched after an earlier one ended runs", async (t) => {
+  const { provider, home } = await ownerWithProvider(t);
+  const earlier = launch({ home, prompt: "Never sent.", args: ["--no-such-option"] });
+  t.after(() => earlier.dispose());
+  await earlier.outcome;
+
+  const request = provider.request(isModelRequest);
+  const run = launch({ home, prompt: "Answer once." });
+  t.after(() => run.dispose());
+
+  const received = await request;
+  assert.equal(received.body.model, "stand-in-model");
+  assert.equal((await run.outcome).exitCode, 0);
+});

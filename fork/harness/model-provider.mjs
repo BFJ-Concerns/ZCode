@@ -8,7 +8,7 @@
  */
 
 import { createServer } from "node:http";
-import { noZcodeRunning } from "./zcode-processes.mjs";
+import { noZcodeRunning, zcodeRunning } from "./zcode-processes.mjs";
 
 const LOOPBACK = "127.0.0.1";
 const SSE_HEADERS = {
@@ -145,20 +145,21 @@ export async function startModelProvider({ listing, script = [] } = {}) {
       return new Promise((resolve, reject) => {
         const waiter = { matches, resolve };
         waiters.add(waiter);
-        // A request sent just before `zcode` ended is still read once its connection closes.
-        noZcodeRunning()
-          .then(async (account) => {
+        // A request sent just before `zcode` ended is still read once its connection closes,
+        // and a `zcode` launched while this waited may yet call: then it waits on that one.
+        const settled = async () => {
+          for (;;) {
+            const account = await noZcodeRunning();
             await drained();
-            return account;
-          })
-          .then((account) => {
-            if (!waiters.delete(waiter)) return;
-            reject(
-              new Error(
-                `zcode ended before the provider received the awaited request.\n${account}`,
-              ),
-            );
-          });
+            if (!zcodeRunning()) return account;
+          }
+        };
+        settled().then((account) => {
+          if (!waiters.delete(waiter)) return;
+          reject(
+            new Error(`zcode ended before the provider received the awaited request.\n${account}`),
+          );
+        });
       });
     },
     close: () =>

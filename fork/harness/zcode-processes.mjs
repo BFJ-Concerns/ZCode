@@ -54,6 +54,9 @@ export function noZcodeRunning() {
   return new Promise((resolve) => idleWaiters.add(resolve));
 }
 
+/** Whether a `zcode` the harness started is running now. */
+export const zcodeRunning = () => running.size > 0;
+
 /** Ends every `zcode` started in `home`, and what each started, running or not. */
 export async function endZcodeIn(/** @type {import("./owner-home.mjs").OwnerHome} */ home) {
   const inHome = [...started].filter((zcode) => zcode.home === home);
