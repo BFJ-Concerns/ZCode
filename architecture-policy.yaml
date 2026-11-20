@@ -713,7 +713,8 @@ modules:
       - apps/zcode-cli/packages/cli/src/arguments.ts
       - apps/zcode-cli/packages/cli/tests/argument-parsing
     managed: true
-    requires: []
+    # fork(per-run-model): the parser reads the per-run option definitions from zcode-cli
+    requires: [zcode-cli]
     publicEntrypoints:
       - apps/zcode-cli/packages/cli/src/arguments.ts
       - apps/zcode-cli/packages/cli/src/argument-parsing/contract.ts
