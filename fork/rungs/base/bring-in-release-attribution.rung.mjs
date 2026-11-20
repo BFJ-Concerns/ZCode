@@ -191,14 +191,17 @@ for (const [scenario, path, step, releaseFile, supplied] of [
   });
 }
 
-for (const [action, lineSeven, lineSix = ["c 6 upstream"]] of [
-  ["deletes", []],
-  ["keeps", ["c 7"]],
-  ["replaces", ["c 7 upstream"]],
-  ["replaces and deletes a neighbour of", ["c 7 upstream"], []],
+const adopted = /the release already makes its changes to/;
+const removed = /rework removed its edits/;
+const uncertain = /the source of its missing edits is unclear in/;
+for (const [scenario, expected, lineSeven, lineSix = ["c 6 upstream"]] of [
+  ["deletes the line", adopted, []],
+  ["keeps the line", removed, ["c 7"]],
+  ["replaces the line", uncertain, ["c 7 upstream"]],
+  ["replaces the line and deletes a neighbour", uncertain, ["c 7 upstream"], []],
+  ["deletes the line and rewrites a neighbour outright", uncertain, [], ["const six = 6"]],
 ]) {
-  const releaseDeletesLine = lineSeven.length === 0;
-  test(`the mixed-edit account reports what supplied a deletion when the release ${action} the line`, (t) => {
+  test(`the mixed-edit account reports the evidence when the release ${scenario}`, (t) => {
     const path = "app/src/c.ts";
     const betaLines = withLine(numbered("c"), 5, "// fork(beta): line five", "beta 5");
     const withMarker = withLine(betaLines, 1, "c 1", "// fork(beta): marker");
@@ -230,10 +233,10 @@ for (const [action, lineSeven, lineSix = ["c 6 upstream"]] of [
     const resumed = bringIn(repository);
     assert.equal(resumed.exitCode, 0, `${resumed.account}${resumed.stderr}`);
     const difference = resumed.account.split("\n").find((line) => line.startsWith("- **beta**"));
-    const adopted = /the release already makes its changes to/;
-    const removed = /rework removed its edits/;
-    assert.match(difference, releaseDeletesLine ? adopted : removed);
-    assert.doesNotMatch(difference, releaseDeletesLine ? removed : adopted);
+    assert.match(difference, expected);
+    for (const other of [adopted, removed, uncertain].filter((wording) => wording !== expected)) {
+      assert.doesNotMatch(difference, other);
+    }
     assert.equal(git(repository, "show", `fork:${path}`), releaseFile.join("\n"));
   });
 }

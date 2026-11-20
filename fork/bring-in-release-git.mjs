@@ -112,23 +112,22 @@ function projectLines(span, changes, expectedBlob, candidateBlob) {
   for (const { before, after } of changes) {
     if (length(span) === 0 && contains(before, span)) {
       if (length(after) === 0) return after;
-      if (length(before) !== length(after)) return undefined;
+      if (length(before) !== length(after)) return null;
       // Credit a rewritten region only when its surviving lines retain their
       // original text in order. A matching line count alone cannot distinguish
       // a rewrite of the neighbours from a substitute for the deleted line.
-      const expected = git(["cat-file", "blob", expectedBlob], { allowFailure: true })
-        .stdout.split("\n")
-        .slice(before.begin, before.end);
-      const actual = git(["cat-file", "blob", candidateBlob], { allowFailure: true })
-        .stdout.split("\n")
-        .slice(after.begin, after.end);
-      return expected.every((line, index) => {
+      const expected = git(["cat-file", "blob", expectedBlob], { allowFailure: true });
+      const candidate = git(["cat-file", "blob", candidateBlob], { allowFailure: true });
+      if (expected.status !== 0 || candidate.status !== 0) return null;
+      const originalLines = expected.stdout.split("\n").slice(before.begin, before.end);
+      const survivingLines = candidate.stdout.split("\n").slice(after.begin, after.end);
+      return originalLines.every((line, index) => {
         const original = line.trim();
-        const next = actual[index].trim();
-        return next === original || (original && next.startsWith(`${original} `));
+        const next = survivingLines[index]?.trim();
+        return next === original || (original && next?.startsWith(`${original} `));
       })
         ? after
-        : undefined;
+        : null;
     }
     if (before.end <= span.begin) offset = after.end - before.end;
     else if (before.begin >= span.end) break;
@@ -155,15 +154,17 @@ function containsTextEdits(step, path, target, targetPath) {
   if (edits.length === 0 || candidateChanges.length === 0 || afterToCandidate.length === 0) {
     return false;
   }
-  return edits.every((edit) => {
+  let uncertain = false;
+  for (const edit of edits) {
+    const matching = candidateChanges.filter((change) => contains(change.before, edit.before));
+    if (matching.length === 0) return false;
     const projected = projectLines(edit.after, afterToCandidate, after, candidate);
-    return (
-      projected &&
-      candidateChanges.some(
-        (change) => contains(change.before, edit.before) && contains(change.after, projected),
-      )
-    );
-  });
+    if (projected === null) uncertain = true;
+    else if (!projected || !matching.some((change) => contains(change.after, projected))) {
+      return false;
+    }
+  }
+  return uncertain ? null : true;
 }
 
 /** Traces missing edits to the release itself or to rework along the replay. */
@@ -195,14 +196,19 @@ export function omittedEdits(release, changes, step, earlierSteps) {
   };
 
   const releasePaths = new Set(changes.flatMap(({ from, to }) => [from, to]));
-  const upstream = new Set(
-    [...missing].filter((path) => releasePaths.has(path) && supplies(release, path)),
-  );
+  const upstream = new Set();
+  const uncertain = new Set();
+  for (const path of missing) {
+    if (!releasePaths.has(path)) continue;
+    const result = supplies(release, path);
+    if (result === true) upstream.add(path);
+    if (result === null) uncertain.add(path);
+  }
   const reworked = new Set(step.reworkedFiles ?? []);
   const removed = [];
   const supplied = [];
   for (const path of step.edits) {
-    if (!missing.has(path) || upstream.has(path)) continue;
+    if (!missing.has(path) || upstream.has(path) || uncertain.has(path)) continue;
     const targetPath = destination(path);
     if (reworked.has(path) || reworked.has(targetPath)) {
       removed.push(path);
@@ -210,15 +216,15 @@ export function omittedEdits(release, changes, step, earlierSteps) {
       earlierSteps.some(
         (earlier) =>
           (earlier.reworkedFiles.includes(path) || earlier.reworkedFiles.includes(targetPath)) &&
-          !supplies(`${earlier.commit}^`, path) &&
-          supplies(earlier.commit, path),
+          supplies(`${earlier.commit}^`, path) === false &&
+          supplies(earlier.commit, path) === true,
       ) &&
-      supplies(`${step.commit}^`, path)
+      supplies(`${step.commit}^`, path) === true
     ) {
       supplied.push(path);
     }
   }
-  return { empty: changed.size === 0, upstream, removed, supplied };
+  return { empty: changed.size === 0, upstream, removed, supplied, uncertain: [...uncertain] };
 }
 
 export class LayoutError extends Error {

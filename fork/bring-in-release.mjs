@@ -388,7 +388,7 @@ function stepLine(state, step, earlierSteps) {
     parts.push(`the release changed ${listed(touched)}`);
   }
   if (step.commit) {
-    const { empty, upstream, removed, supplied } = omittedEdits(
+    const { empty, upstream, removed, supplied, uncertain } = omittedEdits(
       state.release.commit,
       state.changes,
       step,
@@ -407,6 +407,8 @@ function stepLine(state, step, earlierSteps) {
     if (supplied.length > 0) {
       parts.push(`earlier rework supplied its edits to ${listed(supplied.map(code))}`);
     }
+    if (uncertain.length > 0)
+      parts.push(`the source of its missing edits is unclear in ${listed(uncertain.map(code))}`);
     if (step.reworkedFiles?.length > 0) {
       parts.push("reworked");
       earlierSteps.push(step);
@@ -915,8 +917,7 @@ async function moveFork(state) {
 }
 
 async function main() {
-  let options;
-  let state;
+  let options, state;
   try {
     options = parseCommandLine();
     state = startState(options);
