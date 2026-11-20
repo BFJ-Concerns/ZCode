@@ -4,7 +4,8 @@
  */
 export const cliArgumentsModule = {
   id: "cli-arguments",
-  requires: [],
+  // fork(per-run-model): declare the CLI module that supplies the model options
+  requires: ["zcode-cli"],
   provides: ["cli-arguments"],
   publicEntrypoints: ["../arguments.ts", "contract.ts"],
 } as const;

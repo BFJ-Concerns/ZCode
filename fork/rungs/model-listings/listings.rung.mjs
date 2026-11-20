@@ -34,12 +34,15 @@ async function ownerWithListing(
     baseUrl: versionedBase ? provider.baseUrl : new URL(provider.baseUrl).origin,
     modelIds,
     defaultModelId: defaultModelId ?? modelIds[0],
-    defaultReasoningLevel: reasoningLevel,
   });
   const [providerRule] = providerConfig.config.providerConfigRules.providerRules;
   if (apiType) providerRule.config.api.type = apiType;
   if (templateId) providerRule.templateId = templateId;
   if (modelRules) providerConfig.config.modelConfigRules.providerModelRules.push(...modelRules);
+  // A saved model without a reasoning level is passed over for the first model listed.
+  // The level is written into the file here, not by an option of the harness, so that
+  // these rungs hold wherever the model listings difference is replayed.
+  if (reasoningLevel) providerConfig.config.defaultModelSelection.options = { reasoningLevel };
   const home = await createOwnerHome({ providerConfig });
   t.after(() => home.remove());
   return { provider, home };
@@ -144,14 +147,10 @@ test("CLIProxyAPI registry levels take precedence over supported parameters, whi
 });
 
 test("a capability-only listing preserves built-in reasoning levels and their request mapping", async (t) => {
-  const { home, provider } = await ownerWithListing(t, {
-    listing: openRouterListing,
-    defaultModelId: "openai/gpt-6-astra",
-    reasoningLevel: "max",
-    script: [say("Used the saved level."), say("Used the named level.")],
-  });
-
-  const printed = await printedModels(t, home);
+  const printed = await printedModels(
+    t,
+    (await ownerWithListing(t, { listing: openRouterListing })).home,
+  );
   assert.deepEqual(limitsOf(printed, "openai/gpt-6-astra").reasoningLevels, [
     "low",
     "medium",
@@ -167,33 +166,34 @@ test("a capability-only listing preserves built-in reasoning levels and their re
     "xhigh",
   ]);
 
-  const saved = launch({ home, prompt: "Use the saved level." });
-  t.after(() => saved.dispose());
-  const savedOutcome = await saved.outcome;
-  assert.equal(savedOutcome.exitCode, 0, savedOutcome.stderr);
-  assert.equal(savedOutcome.result.response, "Used the saved level.");
-  const [savedRequest] = provider.modelRequests();
-  assert.equal(savedRequest.body.model, "openai/gpt-6-astra");
-  assert.equal(savedRequest.body.reasoning_effort, "max");
+  for (const [model, reasoningLevel, effortOnly] of [
+    ["openai/gpt-6-astra", "max", false],
+    ["openai/gpt-5.4", "xhigh", true],
+  ]) {
+    const { home, provider } = await ownerWithListing(t, {
+      listing: openRouterListing,
+      defaultModelId: model,
+      reasoningLevel,
+      script: [say("Used the saved level.")],
+    });
 
-  const named = launch({
-    home,
-    prompt: "Use the named level.",
-    args: ["--provider", "stand-in", "--model", "openai/gpt-5.4", "--reasoning-level", "xhigh"],
-  });
-  t.after(() => named.dispose());
-  const namedOutcome = await named.outcome;
-  assert.equal(namedOutcome.exitCode, 0, namedOutcome.stderr);
-  assert.equal(namedOutcome.result.response, "Used the named level.");
-  assert.equal(provider.modelRequests().length, 2);
-  const [, namedRequest] = provider.modelRequests();
-  assert.equal(namedRequest.body.model, "openai/gpt-5.4");
-  assert.equal(namedRequest.body.reasoning_effort, "xhigh");
-  assert.equal(
-    namedRequest.body.thinking,
-    undefined,
-    "the built-in model mapping sends effort only",
-  );
+    const run = launch({ home, prompt: "Use the saved level." });
+    t.after(() => run.dispose());
+    const outcome = await run.outcome;
+
+    assert.equal(outcome.exitCode, 0, outcome.stderr);
+    assert.equal(outcome.result.response, "Used the saved level.");
+    const [request] = provider.modelRequests();
+    assert.equal(request.body.model, model);
+    assert.equal(request.body.reasoning_effort, reasoningLevel);
+    if (effortOnly) {
+      assert.equal(
+        request.body.thinking,
+        undefined,
+        "the built-in model mapping sends effort only",
+      );
+    }
+  }
 });
 
 test("a value the owner writes for a model replaces the listing's, and the listing's replaces the built-in rule's", async (t) => {
