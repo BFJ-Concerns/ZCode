@@ -14,6 +14,8 @@ import {
 } from "@zcode/provider-node";
 import { resolveRuntimeZCodeEndpointOrigin, ZCODE_VERSION } from "@zcode/shared";
 import type { CliEnv } from "./env.js";
+// fork(model-listings): the listing command starts a provider registry
+import { MODELS_COMMAND } from "./fork/model-listings/index.js";
 
 export const SEA_ZCODE_BUILTIN_PROVIDER_CONFIG_ASSET_KEY = "zcode-provider/zcode-builtin.json";
 
@@ -124,6 +126,8 @@ function requiresProviderRuntime(argv: readonly string[]): boolean {
     command === "tui" ||
     command === "app-server" ||
     command === "agent-server" ||
+    // fork(model-listings): prepare the registry paths for a command-first listing
+    command === MODELS_COMMAND ||
     command === "login" ||
     command === "logout"
   );

@@ -23,7 +23,8 @@ import { runEmbeddedSearchCli } from "./internal-search/embedded-search-cli.js";
 import { runCommandsCommand } from "./commands-command.js";
 // fork(per-run-model): read an explicit headless model selection
 import { readRunModelFlags } from "./fork/per-run-model/index.js";
-import { runModelsCommand } from "./fork/model-listings/index.js";
+// fork(model-listings): dispatch the model listing command
+import { MODELS_COMMAND, runModelsCommand } from "./fork/model-listings/index.js";
 import { resolveCliCwd } from "./cwd.js";
 import { CLI_COMMAND_NAME, CLI_PROCESS_NAME } from "./process-name.js";
 import { isPluginHostInvocation, runPluginHostCommand } from "./plugin-host-command.js";
@@ -638,7 +639,7 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
     case "commands":
       return await runCommandsCommand(ctx, options, commandDeps, parsed.positionals.slice(1));
     // fork(model-listings): prints every usable model as JSON
-    case "models":
+    case MODELS_COMMAND:
       return await runModelsCommand(ctx, commandDeps, parsed.positionals.slice(1));
     case "plugin":
     case "plugins":

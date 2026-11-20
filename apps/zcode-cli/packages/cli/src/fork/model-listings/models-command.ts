@@ -15,7 +15,8 @@ import type { RunContext } from "@zcode/shared-types";
 import { loadBootstrapModule } from "../../bootstrap-loader.js";
 import type { RunDependencies } from "../../cli-types.js";
 
-const MODELS_COMMAND_USAGE = "Usage: zcode models";
+export const MODELS_COMMAND = "models";
+const MODELS_COMMAND_USAGE = `Usage: zcode ${MODELS_COMMAND}`;
 
 export interface UsableModel {
   readonly provider: string;

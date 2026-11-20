@@ -1,1 +1,1 @@
-export { runModelsCommand } from "./models-command.js";
+export { MODELS_COMMAND, runModelsCommand } from "./models-command.js";

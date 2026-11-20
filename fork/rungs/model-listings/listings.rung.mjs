@@ -7,10 +7,12 @@
  */
 
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { launch } from "../../harness/launcher.mjs";
+import { promisify } from "node:util";
+import { launch, ZCODE_ENTRY } from "../../harness/launcher.mjs";
 import {
   asksForSessionTitle,
   hang,
@@ -56,7 +58,7 @@ async function ownerWithListing(
   return { provider, home };
 }
 
-/** Runs `zcode models` in `home` and returns what it printed. */
+/** Runs the models command in `home` and returns what it printed. */
 async function printedModels(t, home) {
   const run = launch({ home, command: ["models"] });
   t.after(() => run.dispose());
@@ -204,27 +206,40 @@ test("a capability-only listing preserves built-in reasoning levels and their re
   }
 });
 
-test("a value the owner writes for a model replaces the listing's, and the listing's replaces the built-in rule's", async (t) => {
+test("the command-first models forms apply owner and listing overrides", async (t) => {
   const builtin = limitsOf(
     await printedModels(t, (await ownerWithListing(t, { modelIds: ["gateway-coder"] })).home),
     "gateway-coder",
   );
-  const { home } = await ownerWithListing(t, {
-    listing: cliProxyApiCatalogue,
-    modelRules: [
-      {
-        providerId: "stand-in",
-        modelId: "gateway-coder",
-        config: { properties: { contextWindow: 50_000 } },
-      },
-    ],
-  });
-
-  const listed = limitsOf(await printedModels(t, home), "gateway-coder");
-
-  assert.equal(listed.contextWindow, 50_000, "the owner's value");
-  assert.equal(listed.maxOutputTokens, 64_000, "the listing's value");
   assert.notEqual(builtin.maxOutputTokens, 64_000, "the built-in rule says otherwise");
+
+  for (const withCwd of [false, true]) {
+    await t.test(withCwd ? "zcode models --cwd <dir>" : "zcode models", async (t) => {
+      const { home } = await ownerWithListing(t, {
+        listing: cliProxyApiCatalogue,
+        modelRules: [
+          {
+            providerId: "stand-in",
+            modelId: "gateway-coder",
+            config: { properties: { contextWindow: 50_000 } },
+          },
+        ],
+      });
+
+      const args = withCwd ? ["models", "--cwd", home.workspace] : ["models"];
+      // Pass the exact arguments so a launcher-supplied flag cannot trigger provider setup.
+      const { stdout } = await promisify(execFile)(process.execPath, [ZCODE_ENTRY, ...args], {
+        cwd: withCwd ? home.dir : home.workspace,
+        env: home.env,
+        signal: t.signal,
+      });
+      const printed = JSON.parse(stdout);
+      const listed = limitsOf(printed, "gateway-coder");
+      assert.equal(listed.contextWindow, 50_000, "the owner's value");
+      assert.equal(listed.maxOutputTokens, 64_000, "the listing's value");
+      assert.deepEqual(printed.listings, [{ provider: "stand-in", status: "read", models: 2 }]);
+    });
+  }
 });
 
 test("a value the listing does not give comes from the built-in rules", async (t) => {
