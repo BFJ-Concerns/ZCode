@@ -18,7 +18,18 @@ const ANSWER = "Both receivers are ready.";
 beforeEach(forgetAttempts);
 
 async function cachedPluginsHome(t) {
-  const provider = await startModelProvider({ script: [say(ANSWER)] });
+  const provider = await startModelProvider({
+    script: ({ body }) => {
+      // 会话标题请求可能先到，按用途响应以免用掉交互轮次的回复。
+      const titleRequest = body.messages.some(
+        ({ role, content }) =>
+          role === "system" &&
+          typeof content === "string" &&
+          content.startsWith("Generate a concise title for this coding session."),
+      );
+      return titleRequest ? say('{"title":"Cached image search check"}') : say(ANSWER);
+    },
+  });
   t.after(() => provider.close());
   const home = await createOwnerHome({
     providerConfig: providerConfiguration({ baseUrl: provider.baseUrl }),
