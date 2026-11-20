@@ -25,7 +25,6 @@ import {
   getPluginSourceDiagnosticCode,
   getPluginDataDir,
   installMarketplacePlugin,
-  isOfficialCatalogue,
   listInstalledPluginRecords,
   loadKnownMarketplacesSync,
   loadMarketplaceManifestSync,
@@ -46,6 +45,8 @@ import {
   type PluginExtensionSummary,
   type PluginMarketplaceEntry,
 } from "@zcode/adapters/plugins";
+// fork(zai-silence): select which known marketplaces a bulk refresh can visit
+import { bulkMarketplaceIds } from "./fork/zai-silence/index.js";
 import type {
   Logger,
   PluginHookDetail,
@@ -651,8 +652,8 @@ async function updateZCodePluginMarketplaceLocked(
   const knownById = new Map(known.map((record) => [record.id, record]));
   const targetIds = resolveMarketplaceRefreshTargetIds({
     declaredIds: declared.keys(),
-    // 批量刷新将逐个按名称调用 adapter，须在这里跳过内置目录，避免触发显式刷新错误。
-    knownIds: known.map(({ id }) => id).filter((id) => !isOfficialCatalogue(id)),
+    // fork(zai-silence): omit the bundled catalogue from both refresh targets and diagnostics
+    knownIds: bulkMarketplaceIds(known),
     marketplace: options.marketplace,
   });
   if (
