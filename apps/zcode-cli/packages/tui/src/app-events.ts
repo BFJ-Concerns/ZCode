@@ -1,5 +1,7 @@
 import {
   SessionEventType,
+  // fork(model-listings): project the window from the main turn’s event
+  mainTurnContextWindow,
   type ModelUsageSummary,
   type SessionEvent,
   type TodoItem,
@@ -313,6 +315,8 @@ function applyModelCompleteEvent(
       setContextUsage((current) => ({
         ...current,
         contextUsed: nextUsage.inputTokens,
+        // fork(model-listings): use the actual model window in the live footer
+        ...mainTurnContextWindow(payload),
       }));
     }
   }

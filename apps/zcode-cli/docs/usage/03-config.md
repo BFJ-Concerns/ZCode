@@ -19,6 +19,7 @@
 
 以下是当前文件格式。它用于自定义 OpenAI Chat Completions 兼容服务，地址、模型名和 Key 必须替换。`api.baseUrl` 的拼写与旧格式的 `options.baseURL` 不同。
 
+<!-- fork(model-listings): include a complete per-model override in the example -->
 ```json
 {
   "schemaVersion": 1,
@@ -41,7 +42,16 @@
       ]
     },
     "modelConfigRules": {
-      "providerModelRules": [],
+      "providerModelRules": [
+        {
+          "providerId": "example",
+          "modelId": "example-model",
+          "config": {
+            "properties": { "contextWindow": 128000 },
+            "optionSpecs": { "maxOutputTokens": { "max": 16000 } }
+          }
+        }
+      ],
       "manualProviderModelRules": []
     },
     "defaultModelSelection": {
@@ -55,6 +65,11 @@
 支持的 API 类型为 `openai-chat-completions`、`openai-responses`、`anthropic-messages`。服务必须支持所选协议及任务需要的工具调用。模型能力、推理选项和输出限制还受模型规则约束；不要仅改一个模型名称就假设所有选项兼容。
 
 自定义 API Key 可以由启动器从受控凭据来源写入临时配置。该文件含明文 Key，应限制文件权限，不提交到 Git，不放入评测结果归档。配置读取不承诺对 `apiKey` 字符串做 `${ENV}` 替换。
+
+<!-- fork(model-listings): illustrate a per-model override where readers configure providers -->
+示例使用 `providerModelRules` 为 `example-model` 覆盖上下文窗口和最大输出。个人规则优先于提供方模型列表和内置规则。只需填写要覆盖的字段，上下文窗口写在 `config.properties.contextWindow`。
+
+运行 `zcode models` 可检查生效值。配置无效或已启用的提供方没有可用模型时，命令会在 stderr 给出诊断，并以非零状态退出。
 
 `providerModelRules` 用于模型规则覆盖；`manualProviderModelRules` 用于完整手动模型定义，同一 provider/model 不能同时出现在两者。精确 schema 见 [provider 文件编解码](../../../../packages/provider-node/src/provider-config-file-codec.ts)及[模型规则](../../../../packages/provider/src/config/rule-data-schema.ts)。默认模型选择的 `options` 可保存模型支持的选项，不能填写该模型不支持的 reasoning 档位。
 

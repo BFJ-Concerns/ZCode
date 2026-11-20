@@ -4,7 +4,13 @@
  * reading each configured provider's model listing came to.
  */
 
-import { readModelListingReport, type ModelListingResult } from "@zcode/provider-node";
+import {
+  describeRejectedProviderConfig,
+  PERSONAL_PROVIDER_CONFIG_FILE_NAME,
+  readModelListingReport,
+  resolveNodeProviderRuntimePaths,
+  type ModelListingResult,
+} from "@zcode/provider-node";
 import type { RunContext } from "@zcode/shared-types";
 import { loadBootstrapModule } from "../../bootstrap-loader.js";
 import type { RunDependencies } from "../../cli-types.js";
@@ -36,17 +42,30 @@ export async function runModelsCommand(
     deps.startProcessProviderRegistryRuntime ??
     (await loadBootstrapModule()).startProcessProviderRegistryRuntime;
   // The same provider registry a run starts with, so the command prints what a run holds.
-  const registry = await startRegistry(
-    deps.env ?? process.env,
-    deps.skipUserConfig
+  const env = deps.env ?? process.env;
+  let rejectedConfig: string | undefined;
+  const registry = await startRegistry(env, {
+    onPersonalConfigRecovery: ({ error }) => {
+      rejectedConfig ??= describeRejectedProviderConfig(error);
+    },
+    ...(deps.skipUserConfig
       ? {}
       : {
           standalone: deps.userConfigPath
             ? { legacyCliUserConfigFilePath: deps.userConfigPath }
             : {},
-        },
-  );
+        }),
+  });
   try {
+    if (rejectedConfig !== undefined) {
+      const file =
+        resolveNodeProviderRuntimePaths(env)?.personalFilePath ??
+        PERSONAL_PROVIDER_CONFIG_FILE_NAME;
+      ctx.stderr.write(
+        `Could not load provider configuration ${JSON.stringify(file)}: ${rejectedConfig}.\n`,
+      );
+      return 1;
+    }
     const snapshot = registry.runtime.registryService.getSnapshot() ?? registry.snapshot;
     const models = snapshot.registry.providers.flatMap((provider) =>
       provider.models.map(
@@ -61,6 +80,20 @@ export async function runModelsCommand(
     );
     const listings = readModelListingReport(snapshot.config).map(listingOutcome);
     ctx.stdout.write(`${JSON.stringify({ models, listings }, null, 2)}\n`);
+    const providersWithModels = new Set(models.map(({ provider }) => provider));
+    const emptyProviders = snapshot.config.personalProviders
+      .rules()
+      .filter(
+        ({ enabled, providerId }) => enabled !== false && !providersWithModels.has(providerId),
+      );
+    for (const { providerId } of emptyProviders) {
+      ctx.stderr.write(`Provider ${JSON.stringify(providerId)} has no usable models.\n`);
+    }
+    if (emptyProviders.length > 0) return 1;
+    if (models.length === 0) {
+      ctx.stderr.write("No usable models. Configure a provider or check its listing.\n");
+      return 1;
+    }
     return 0;
   } finally {
     registry.dispose();

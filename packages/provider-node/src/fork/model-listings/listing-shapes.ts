@@ -7,7 +7,7 @@
  *   visibility }] }`. Entries hidden from clients (image and video models) are skipped.
  * - The OpenAI-compatible listing OpenRouter serves (`GET /models`):
  *   `{ data: [{ id, context_length, top_provider: { context_length, max_completion_tokens },
- *   supported_parameters }] }`. A plain OpenAI listing is the same shape with only `id`.
+ *   reasoning: { supported_efforts }, supported_parameters }] }`. A plain OpenAI listing is the same shape with only `id`.
  *
  * A value the listing does not give is left out, so the built-in rules supply it.
  */
@@ -24,6 +24,14 @@ export interface ListedModel {
 
 /** The only level a model holds when its listing says it does not reason. */
 const NO_REASONING_LEVELS = Object.freeze(["disabled"]);
+
+// The registry uses the first value as the lowest effort for auxiliary calls.
+const OPENROUTER_EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const OPENROUTER_EFFORT_RANK = new Map(OPENROUTER_EFFORT_ORDER.map((level, rank) => [level, rank]));
+
+function openRouterEffortRank(level: string): number {
+  return OPENROUTER_EFFORT_RANK.get(level) ?? OPENROUTER_EFFORT_ORDER.length;
+}
 
 export function parseModelListing(body: unknown): readonly ListedModel[] | undefined {
   if (!isRecord(body)) return undefined;
@@ -77,10 +85,20 @@ function readOpenAiEntry(entry: unknown): ListedModel | undefined {
   });
 }
 
-/** CLIProxyAPI's own registry entries carry `thinking.levels`; OpenRouter's carry `supported_parameters`. */
+/** Explicit levels take precedence over a capability flag. */
 function openAiReasoning(
   entry: Record<string, unknown>,
 ): Pick<ListedModel, "reasoningLevels" | "reasoningSupported"> {
+  if (isRecord(entry.reasoning) && Array.isArray(entry.reasoning.supported_efforts)) {
+    const levels = uniqueLevels(entry.reasoning.supported_efforts.map(nonEmptyString));
+    if (levels) {
+      return {
+        reasoningLevels: Object.freeze(
+          levels.toSorted((a, b) => openRouterEffortRank(a) - openRouterEffortRank(b)),
+        ),
+      };
+    }
+  }
   if (isRecord(entry.thinking) && Array.isArray(entry.thinking.levels)) {
     const levels = uniqueLevels(entry.thinking.levels.map(nonEmptyString));
     if (levels) return { reasoningLevels: levels };
