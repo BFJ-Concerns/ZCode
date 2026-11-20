@@ -583,6 +583,9 @@ function unexercisedAreas(state) {
 class Refusal extends Error {}
 
 const HEAD = (worktree) => git(["rev-parse", "HEAD"], { cwd: worktree });
+/** A step not yet replayed onto the release. */
+const markPending = (step) =>
+  Object.assign(step, { status: "pending", commit: undefined, conflicts: [], proof: undefined });
 const filesOf = (commit) => lines(git(["diff", "--name-only", `${commit}^`, commit]));
 const treeOf = (commit) => git(["rev-parse", `${commit}^{tree}`]);
 const branchExists = (branch) =>
@@ -698,7 +701,7 @@ function prepare(state) {
           git(["cat-file", "-e", `${state.base.commit}:${path}`], { allowFailure: true }).status ===
           0,
       );
-      Object.assign(step, { status: "pending", conflicts: [] });
+      markPending(step);
     }
     if (treeOf(HEAD(state.worktree)) !== treeOf(state.fork.tip)) {
       throw new Stop(
@@ -799,15 +802,7 @@ function resume(state) {
     notMovedBecause: undefined,
   });
   state.steps.forEach((step, index) => {
-    if (index >= commits.length) {
-      Object.assign(step, {
-        status: "pending",
-        commit: undefined,
-        conflicts: [],
-        proof: undefined,
-      });
-      return;
-    }
+    if (index >= commits.length) return markPending(step);
     if (step.status === "passed" && step.commit === commits[index]) return;
     if (step.commit !== commits[index] && step.status !== "pending") step.reworked = true;
     Object.assign(step, { status: "replayed", commit: commits[index], proof: undefined });
@@ -937,17 +932,9 @@ function moveFork(state) {
       return;
     }
   } else {
-    const moved = git(
-      [
-        "update-ref",
-        "-m",
-        `bring in upstream ${state.release.label}`,
-        forkRef,
-        state.head,
-        state.fork.tip,
-      ],
-      { allowFailure: true },
-    );
+    const reason = `bring in upstream ${state.release.label}`;
+    const update = ["update-ref", "-m", reason, forkRef, state.head, state.fork.tip];
+    const moved = git(update, { allowFailure: true });
     if (moved.status !== 0) return movedMeanwhile();
   }
   state.outcome = "moved";
