@@ -145,12 +145,14 @@ test("only the stand-ins can be reached, and every other attempt is recorded", a
 });
 
 test("zcode, and a command it runs, are refused and recorded wherever they reach", async (t) => {
+  // The command says what became of its connection, and its output goes back to the model.
   const reach = [
     `const net = require("node:net");`,
     `const socket = net.connect(9, "command.elsewhere.example");`,
+    `socket.on("connect", () => { console.log("command connected"); socket.destroy(); });`,
     `socket.on("error", (error) => console.log("command " + error.code));`,
   ].join(" ");
-  const { home } = await ownerWithProvider(t, [
+  const { provider, home } = await ownerWithProvider(t, [
     callTool("Bash", {
       command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(reach)}`,
       description: "Reach another host",
@@ -161,6 +163,12 @@ test("zcode, and a command it runs, are refused and recorded wherever they reach
   t.after(() => run.dispose());
   const outcome = await run.outcome;
   assert.equal(outcome.exitCode, 0, outcome.stderr);
+  const [, afterCommand] = provider.modelRequests();
+  const commandOutput = afterCommand.body.messages
+    .filter((message) => message.role === "tool")
+    .map((message) => JSON.stringify(message.content))
+    .join("\n");
+  assert.match(commandOutput, /command ECONNREFUSED/, "the command's connection is refused");
 
   // A provider the owner names on a host the sandbox does not hold: zcode itself reaches
   // for it, and retries for minutes, so the rung stops it once an attempt has failed.
