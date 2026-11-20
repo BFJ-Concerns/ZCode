@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { launch } from "../../harness/launcher.mjs";
 import { callTool, say, startModelProvider } from "../../harness/model-provider.mjs";
+import { attempts, forgetAttempts } from "../../harness/network-sandbox.mjs";
 import { createOwnerHome, providerConfiguration } from "../../harness/owner-home.mjs";
 
 const UPSTREAM_VERSION = "0.2.2";
@@ -26,6 +27,19 @@ const toolResults = (request) =>
   request.body.messages
     .filter((message) => message.role === "tool")
     .map((message) => JSON.stringify(message.content));
+
+/**
+ * Nothing left the sandbox and the fork refused nothing: a catalogue upstream saved names
+ * Z.ai's host as the source of its plugins, and no plugin command may go there for one.
+ */
+async function assertNothingAttempted(home) {
+  assert.deepEqual(await attempts(), { names: [], connections: [] });
+  const refusals = await readFile(
+    join(home.dir, ".zcode", "cli", "refused-zai-connections.jsonl"),
+    "utf8",
+  ).catch((error) => (error.code === "ENOENT" ? "" : Promise.reject(error)));
+  assert.equal(refusals, "", "the fork refused no connection to a Z.ai host");
+}
 
 /** Rewrites the fork's seed of the Word plugin in `home` into the one upstream leaves. */
 async function makeUpstreamSeed(home) {
@@ -129,6 +143,14 @@ test("an upgraded home lists only the official plugins bundled by this build", a
   for (const filename of ["cdn-marketplace.json", "marketplace.json"]) {
     await writeFile(join(catalogueDir, filename), JSON.stringify(downloaded));
   }
+  await forgetAttempts();
+
+  const install = launch({ home, command: ["plugins", "install", `download-only@${official}`] });
+  t.after(() => install.dispose());
+  const refused = await install.outcome;
+  assert.equal(refused.exitCode, 1);
+  assert.match(refused.stderr, /This build does not carry download-only@zcode-plugins-official/u);
+  await assertNothingAttempted(home);
 
   const list = launch({ home, command: ["plugins", "list", "--available"], args: ["--json"] });
   t.after(() => list.dispose());
@@ -144,4 +166,5 @@ test("an upgraded home lists only the official plugins bundled by this build", a
   assert.ok(!names.includes("zcode-site"), "the catalogue lists site publishing");
   assert.ok(!names.includes("download-only"), "the catalogue lists an upstream download");
   assert.match(entries.find(({ name }) => name === "documents").version, /\+fork\.zai-silence$/u);
+  await assertNothingAttempted(home);
 });

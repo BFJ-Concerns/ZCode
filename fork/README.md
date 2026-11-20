@@ -211,6 +211,10 @@ stand-in knows when no `zcode` is left to call it.
 
 ### Z.ai silence
 
+The official marketplace list reports a bundled source and counts the entries in the
+catalogue that ships with the build. An explicit install from that catalogue reports a
+plugin it does not carry as unavailable in this build.
+
 An unnamed marketplace refresh updates the owner's known catalogues and omits the bundled
 official catalogue from both its work and its diagnostics. An explicit request to refresh
 that catalogue explains that it is bundled. The CLI's connection guard checks the Node
