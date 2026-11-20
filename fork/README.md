@@ -19,9 +19,12 @@ node fork/build.mjs
 installs the dependencies of `@zcode/cli` from the lockfile and builds it with the
 packages it depends on. It also builds the document viewers, Browser Use's client and
 shared Node REPL host, and the Android and iOS simulator servers. Content-only plugins
-seed directly from the checkout. The build needs Node and pnpm at the versions in
-`mise.toml`, and the npm registry (or a pnpm store that already has the packages) the
-first time.
+seed directly from the checkout. The build needs pnpm at the version in `mise.toml`, a
+Node that provides `node:ffi` (26.12.1, say), and the npm registry (or a pnpm store that
+already has the packages) the first time. The Node 24.14.0 that upstream's `mise.toml`
+pins builds the fork but has no `node:ffi`, so on it the terminal-node-ffi start-up rung
+cannot exercise its behaviour and skips, and a skipped rung fails its file: `node
+fork/rungs.mjs` cannot pass there.
 
 Every entry in the bundled catalogue seeds a complete local cache in a fresh CLI home.
 
@@ -238,7 +241,7 @@ works in a fresh worktree and installs and builds what it needs.
 
 | Command               | What it runs                                                                                                                                                                                                                                                                                                                            | What it needs installed                                                                                                                                   |
 | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node fork/check.mjs` | The build; the type check and upstream's lint of `@zcode/cli` and the packages it depends on; lint and format of every file the fork owns, everything under `fork/` and in a `src/fork/` directory, each by the formatter of the workspace it is in, with its Python read as Python. A file the fork owns that no check reads fails it. | Node and pnpm as in `mise.toml`, and `python3`; the npm registry or a warm pnpm store.                                                                    |
+| `node fork/check.mjs` | The build; the type check and upstream's lint of `@zcode/cli` and the packages it depends on; lint and format of every file the fork owns, everything under `fork/` and in a `src/fork/` directory, each by the formatter of the workspace it is in, with its Python read as Python. A file the fork owns that no check reads fails it. | pnpm as in `mise.toml`, a Node with `node:ffi` (see [Build and run](#build-and-run)), and `python3`; the npm registry or a warm pnpm store.               |
 | `node fork/rungs.mjs` | The build, then every rung.                                                                                                                                                                                                                                                                                                             | The same, on Linux with unprivileged user namespaces allowed, and `unshare` and `mount` (util-linux), `ip` (iproute2) and `nft` (nftables) on the `PATH`. |
 
 Upstream's own unit tests, architecture checks and whole-repository `typecheck` are not
