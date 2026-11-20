@@ -49,7 +49,7 @@ import {
 import {
   bulkMarketplaceIds,
   bundledCatalogueSummary,
-  unavailableBundledPlugin,
+  checkBundledCatalogueInstall,
 } from "./fork/zai-silence/index.js";
 import type {
   Logger,
@@ -713,24 +713,19 @@ async function installZCodeMarketplacePluginLocked(
   const { configResult, pluginStorageRoot, workingDirectory } = await resolvePluginContext(options);
   await ensureDefaultPluginMarketplaces(pluginStorageRoot);
   const pluginId = `${options.pluginName}@${options.marketplace}`;
-  const isBundledOfficial = options.marketplace === ZCODE_OFFICIAL_PLUGIN_MARKETPLACE;
-  // fork(zai-silence): report an unavailable official plugin before dependency resolution.
-  // 必须先发布内置目录，旧的 CDN 快照不能决定插件是否可安装。
-  if (isBundledOfficial) {
-    await resolveOfficialPluginRoots({
-      storageRoot: pluginStorageRoot,
-      preparation: options.pluginPreparation,
-      logger: options.logger,
-    });
-    const bundledEntry = loadMarketplaceManifestSync(
-      pluginStorageRoot,
-      options.marketplace,
-    )?.plugins.find((entry) => entry.name === options.pluginName);
-    const unavailable = unavailableBundledPlugin(pluginId, bundledEntry?.source);
-    if (unavailable) {
-      return { dependencyClosure: [], installedPlugins: [], diagnostics: [unavailable] };
-    }
-  }
+  // fork(zai-silence): check the bundled catalogue before resolving install dependencies
+  const refusal = await checkBundledCatalogueInstall({
+    marketplace: options.marketplace,
+    pluginName: options.pluginName,
+    storageRoot: pluginStorageRoot,
+    prepare: () =>
+      resolveOfficialPluginRoots({
+        storageRoot: pluginStorageRoot,
+        preparation: options.pluginPreparation,
+        logger: options.logger,
+      }),
+  });
+  if (refusal) return refusal;
   if (options.dryRun === true) {
     const declarationSource = resolveDeclaredMarketplaceSources({
       configResult,
@@ -777,7 +772,8 @@ async function installZCodeMarketplacePluginLocked(
   }
   // fork(zai-silence): an official entry that reaches restore is from the bundled catalogue
   const isSuppressedBundledOfficial =
-    isBundledOfficial && configResult.config.plugins.suppressedBuiltins.includes(pluginId);
+    options.marketplace === ZCODE_OFFICIAL_PLUGIN_MARKETPLACE &&
+    configResult.config.plugins.suppressedBuiltins.includes(pluginId);
   if (isSuppressedBundledOfficial) {
     // 内置插件的 filesystem/SEA entry 只是 Catalog 指针，不是普通 Marketplace source。
     // 直接安装必须复用 restore，避免把同一份官方 cache 写进 installed_plugins.json，
