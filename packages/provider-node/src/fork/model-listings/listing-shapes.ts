@@ -1,15 +1,9 @@
+import type { ModelInputFormatConfigInput } from "@zcode/provider";
+
 /**
- * Reads a provider's model listing into the limits the fork takes from it. Two shapes
- * are understood, and a body may carry either:
- *
- * - CLIProxyAPI's client catalogue (`GET /models?client_version=cpa`):
- *   `{ models: [{ slug, context_window, max_tokens, supported_reasoning_levels: [{ effort }],
- *   visibility }] }`. Entries hidden from clients (image and video models) are skipped.
- * - The OpenAI-compatible listing OpenRouter serves (`GET /models`):
- *   `{ data: [{ id, context_length, top_provider: { context_length, max_completion_tokens },
- *   reasoning: { supported_efforts }, supported_parameters }] }`. A plain OpenAI listing is the same shape with only `id`.
- *
- * A value the listing does not give is left out, so the built-in rules supply it.
+ * Reads the CLIProxyAPI catalogue and OpenAI-compatible model listings, including
+ * OpenRouter's architecture metadata and NanoGPT's detailed catalogue. Missing
+ * metadata leaves the corresponding built-in values in place.
  */
 
 /** One model as its provider lists it. */
@@ -18,6 +12,7 @@ export interface ListedModel {
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
   readonly reasoningLevels?: readonly string[];
+  readonly inputFormat?: ModelInputFormatConfigInput;
   /** The listing advertises reasoning without naming any levels. */
   readonly reasoningSupported?: true;
 }
@@ -67,27 +62,36 @@ function readCatalogueEntry(entry: unknown): ListedModel | undefined {
       positiveInteger(entry.context_window) ?? positiveInteger(entry.max_context_window),
     maxOutputTokens: positiveInteger(entry.max_tokens),
     reasoningLevels: levels,
+    inputFormat: readInputFormat(entry.input_modalities),
   });
 }
 
 function readOpenAiEntry(entry: unknown): ListedModel | undefined {
-  if (!isRecord(entry)) return undefined;
+  if (!isRecord(entry) || entry.available === false) return undefined;
   const modelId = nonEmptyString(entry.id);
   if (!modelId) return undefined;
   const topProvider = isRecord(entry.top_provider) ? entry.top_provider : {};
+  const architecture = isRecord(entry.architecture) ? entry.architecture : {};
+  const capabilities = isRecord(entry.capabilities) ? entry.capabilities : {};
   return listedModel(modelId, {
     contextWindow:
       positiveInteger(topProvider.context_length) ?? positiveInteger(entry.context_length),
     maxOutputTokens:
       positiveInteger(topProvider.max_completion_tokens) ??
-      positiveInteger(entry.max_completion_tokens),
-    ...openAiReasoning(entry),
+      positiveInteger(entry.max_completion_tokens) ??
+      positiveInteger(entry.max_output_tokens),
+    inputFormat: readInputFormat(
+      architecture.input_modalities ?? entry.input_modalities,
+      capabilities,
+    ),
+    ...openAiReasoning(entry, capabilities.reasoning),
   });
 }
 
 /** Explicit levels take precedence over a capability flag. */
 function openAiReasoning(
   entry: Record<string, unknown>,
+  reasoningCapability: unknown,
 ): Pick<ListedModel, "reasoningLevels" | "reasoningSupported"> {
   if (isRecord(entry.reasoning) && Array.isArray(entry.reasoning.supported_efforts)) {
     const levels = uniqueLevels(entry.reasoning.supported_efforts.map(nonEmptyString));
@@ -99,9 +103,18 @@ function openAiReasoning(
       };
     }
   }
+  if (Array.isArray(entry.reasoning_efforts)) {
+    const levels = uniqueLevels(entry.reasoning_efforts.map(nonEmptyString));
+    if (levels) return { reasoningLevels: levels };
+  }
   if (isRecord(entry.thinking) && Array.isArray(entry.thinking.levels)) {
     const levels = uniqueLevels(entry.thinking.levels.map(nonEmptyString));
     if (levels) return { reasoningLevels: levels };
+  }
+  if (typeof reasoningCapability === "boolean") {
+    return reasoningCapability
+      ? { reasoningSupported: true }
+      : { reasoningLevels: NO_REASONING_LEVELS };
   }
   if (!Array.isArray(entry.supported_parameters)) return {};
   const reasons = entry.supported_parameters.some(
@@ -110,13 +123,48 @@ function openAiReasoning(
   return reasons ? { reasoningSupported: true } : { reasoningLevels: NO_REASONING_LEVELS };
 }
 
-function listedModel(modelId: string, limits: Omit<ListedModel, "modelId">): ListedModel {
+function readInputFormat(
+  advertised: unknown,
+  capabilities: Record<string, unknown> = {},
+): ModelInputFormatConfigInput | undefined {
+  const modalities =
+    Array.isArray(advertised) && advertised.every((kind) => nonEmptyString(kind) !== undefined)
+      ? new Set(advertised.map(nonEmptyString))
+      : undefined;
+  const supportsText = modalities?.has("text");
+  const supportsImage = booleanValue(capabilities.vision) ?? modalities?.has("image");
+  // NanoGPT reports PDF support separately from architecture.input_modalities.
+  const supportsPdf =
+    booleanValue(capabilities.pdf_upload) ??
+    (modalities && (modalities.has("pdf") || modalities.has("file")));
+  const supportsVideo = booleanValue(capabilities.video_input) ?? modalities?.has("video");
+  const supportsAudio = booleanValue(capabilities.audio_input) ?? modalities?.has("audio");
+  const inputFormat = {
+    ...(supportsText === undefined ? {} : { supportsText }),
+    ...(supportsImage === undefined ? {} : { supportsImage }),
+    ...(supportsPdf === undefined ? {} : { supportsPdf }),
+    ...(supportsVideo === undefined ? {} : { supportsVideo }),
+    ...(supportsAudio === undefined ? {} : { supportsAudio }),
+  };
+  return Object.keys(inputFormat).length > 0 ? Object.freeze(inputFormat) : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function listedModel(modelId: string, metadata: Omit<ListedModel, "modelId">): ListedModel {
   return Object.freeze({
     modelId,
-    ...(limits.contextWindow === undefined ? {} : { contextWindow: limits.contextWindow }),
-    ...(limits.maxOutputTokens === undefined ? {} : { maxOutputTokens: limits.maxOutputTokens }),
-    ...(limits.reasoningLevels === undefined ? {} : { reasoningLevels: limits.reasoningLevels }),
-    ...(limits.reasoningSupported ? { reasoningSupported: true } : {}),
+    ...(metadata.contextWindow === undefined ? {} : { contextWindow: metadata.contextWindow }),
+    ...(metadata.maxOutputTokens === undefined
+      ? {}
+      : { maxOutputTokens: metadata.maxOutputTokens }),
+    ...(metadata.reasoningLevels === undefined
+      ? {}
+      : { reasoningLevels: metadata.reasoningLevels }),
+    ...(metadata.reasoningSupported ? { reasoningSupported: true } : {}),
+    ...(metadata.inputFormat === undefined ? {} : { inputFormat: metadata.inputFormat }),
   });
 }
 

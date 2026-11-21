@@ -50,6 +50,8 @@ const CAPABILITY_REASONING_LEVELS = ["low", "medium", "high"] as const;
  * each model's limits. Other OpenAI-compatible providers ignore the parameter.
  */
 const CLIPROXYAPI_CATALOGUE_QUERY = "client_version=cpa";
+const NANOGPT_CATALOGUE_QUERY = "detailed=true";
+const NANOGPT_HOSTS = new Set(["nano-gpt.com", "api.nano-gpt.com"]);
 
 export type ModelListingResult =
   | {
@@ -193,6 +195,9 @@ function listingRequests(snapshot: ProviderConfigSnapshot): readonly ListingRequ
     if (!baseUrl || !apiType) return [];
     if (!isApiKeyAccess(config.access) || !config.access.apiKey) return [];
     const apiKey = config.access.apiKey;
+    const host = URL.parse(baseUrl)?.hostname;
+    const listingQuery =
+      host && NANOGPT_HOSTS.has(host) ? NANOGPT_CATALOGUE_QUERY : CLIPROXYAPI_CATALOGUE_QUERY;
     const templateId =
       rule.templateId ?? snapshot.zcodeBuiltinProviders.getRule(rule.providerId)?.templateId;
     const identity = {
@@ -205,7 +210,7 @@ function listingRequests(snapshot: ProviderConfigSnapshot): readonly ListingRequ
       return [
         {
           ...identity,
-          url: `${baseUrl}/models?${CLIPROXYAPI_CATALOGUE_QUERY}`,
+          url: `${baseUrl}/models?${listingQuery}`,
           headers: { ...config.api?.headers, authorization: `Bearer ${apiKey}` },
         },
       ];
@@ -215,7 +220,7 @@ function listingRequests(snapshot: ProviderConfigSnapshot): readonly ListingRequ
       return [
         {
           ...identity,
-          url: `${versioned}/models?${CLIPROXYAPI_CATALOGUE_QUERY}`,
+          url: `${versioned}/models?${listingQuery}`,
           // The same two credentials the Anthropic-compatible requests carry.
           headers: {
             ...config.api?.headers,
@@ -300,7 +305,7 @@ function listingRule(
   everyModelRules: ModelConfigRules,
   modelRules: ModelConfigRules,
 ): ModelConfigRule {
-  const { contextWindow, maxOutputTokens } = model;
+  const { contextWindow, maxOutputTokens, inputFormat } = model;
   const identity = { ...request, modelId: model.modelId };
   const usesCapabilityFallback =
     model.reasoningSupported &&
@@ -312,9 +317,10 @@ function listingRule(
     : undefined;
   const config = new ModelConfig({
     enabled: true,
-    ...(contextWindow === undefined
-      ? {}
-      : { properties: new ModelPropertiesConfig({ contextWindow }) }),
+    properties: new ModelPropertiesConfig({
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+      ...(inputFormat === undefined ? {} : { inputFormat }),
+    }),
     optionSpecs: new ModelOptionSpecsConfig({
       ...(reasoningLevels
         ? {

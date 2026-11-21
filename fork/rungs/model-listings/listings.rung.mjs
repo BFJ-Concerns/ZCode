@@ -1,7 +1,7 @@
 /**
  * Model listings: the fork reads each configured provider's model listing, in
- * CLIProxyAPI's shape and in OpenRouter's, and holds each model to the context window,
- * maximum output and reasoning levels it gives. The owner's configuration overrides
+ * CLIProxyAPI's, OpenRouter's and NanoGPT's shapes. It holds each model to the context
+ * window, maximum output, reasoning levels and input capabilities it gives. The owner's configuration overrides
  * the listing, the listing overrides the built-in rules, and a listing that cannot be
  * read never stops a run. Observed through `zcode models` and at the stand-in provider.
  */
@@ -19,9 +19,10 @@ import {
   say,
   startModelProvider,
 } from "../../harness/model-provider.mjs";
+import { pointNameAtStandIn } from "../../harness/network-sandbox.mjs";
 import { createOwnerHome, providerConfiguration } from "../../harness/owner-home.mjs";
 import { openTerminalUi } from "../../harness/terminal-ui.mjs";
-import { cliProxyApiCatalogue, openRouterListing } from "./listings.mjs";
+import { cliProxyApiCatalogue, nanoGptListing, openRouterListing } from "./listings.mjs";
 
 /** A stand-in serving `listing`, and a home whose configuration names only `modelIds`. */
 async function ownerWithListing(
@@ -36,12 +37,19 @@ async function ownerWithListing(
     apiType,
     versionedBase = true,
     templateId,
+    hostname,
   },
 ) {
   const provider = await startModelProvider({ listing, script });
   t.after(() => provider.close());
+  const baseUrl = new URL(provider.baseUrl);
+  if (hostname) {
+    await pointNameAtStandIn(hostname);
+    baseUrl.hostname = hostname;
+  }
+  if (!versionedBase) baseUrl.pathname = "";
   const providerConfig = providerConfiguration({
-    baseUrl: versionedBase ? provider.baseUrl : new URL(provider.baseUrl).origin,
+    baseUrl: baseUrl.href,
     modelIds,
     defaultModelId: defaultModelId ?? modelIds[0],
   });
@@ -74,6 +82,34 @@ const limitsOf = (printed, model) => {
   return { contextWindow, maxOutputTokens, reasoningLevels };
 };
 
+const inputsOf = (printed, model) =>
+  printed.models.find((entry) => entry.model === model)?.inputModalities;
+
+for (const hostname of ["nano-gpt.com", "api.nano-gpt.com"]) {
+  test(`NanoGPT at ${hostname} supplies detailed limits, reasoning and input kinds`, async (t) => {
+    const { home, provider } = await ownerWithListing(t, {
+      hostname,
+      listing: nanoGptListing,
+    });
+    const printed = await printedModels(t, home);
+    assert.deepEqual(limitsOf(printed, "nano-vision"), {
+      contextWindow: 900_000,
+      maxOutputTokens: 180_000,
+      reasoningLevels: ["none", "low", "high", "max"],
+    });
+    assert.deepEqual(inputsOf(printed, "nano-vision"), ["text", "image", "pdf", "video", "audio"]);
+    assert.deepEqual(inputsOf(printed, "nano-text"), ["text"]);
+    assert.deepEqual(limitsOf(printed, "nano-text").reasoningLevels, ["disabled"]);
+    assert.equal(
+      printed.models.some(({ model }) => model === "TEE/paused"),
+      false,
+    );
+    assert.deepEqual(printed.listings, [{ provider: "stand-in", status: "read", models: 2 }]);
+    assert.equal(provider.requests[0].path, "/v1/models?detailed=true");
+    assert.equal(provider.requests[0].headers.authorization, "Bearer stand-in-key");
+  });
+}
+
 test("served CLIProxyAPI's catalogue, the command prints the window, output and levels it gave", async (t) => {
   const { provider, home } = await ownerWithListing(t, { listing: cliProxyApiCatalogue });
 
@@ -96,6 +132,9 @@ test("served CLIProxyAPI's catalogue, the command prints the window, output and 
   );
   assert.deepEqual(printed.listings, [{ provider: "stand-in", status: "read", models: 2 }]);
 
+  assert.deepEqual(inputsOf(printed, "gateway-coder"), ["text", "image"]);
+  assert.deepEqual(inputsOf(printed, "gateway-chat"), ["text"]);
+
   const [listingRequest] = provider.requests;
   assert.equal(listingRequest.method, "GET");
   assert.equal(listingRequest.path, "/v1/models?client_version=cpa");
@@ -116,6 +155,13 @@ test("served OpenRouter's listing, the command prints the window, output and lev
     maxOutputTokens: 100_000,
     reasoningLevels: ["none", "minimal", "low", "high", "xhigh"],
   });
+  assert.deepEqual(inputsOf(printed, "vendor/reasoner"), [
+    "text",
+    "image",
+    "pdf",
+    "video",
+    "audio",
+  ]);
   assert.deepEqual(limitsOf(printed, "vendor/plain"), {
     contextWindow: 32_768,
     maxOutputTokens: 8_192,
@@ -255,6 +301,79 @@ test("a value the listing does not give comes from the built-in rules", async (t
 
   assert.deepEqual(listed, { ...builtin, contextWindow: 64_000 });
 });
+
+test("owner, listing and built-in input capabilities overlay per kind", async (t) => {
+  const modelId = "gpt-5.4";
+  const builtin = await printedModels(t, (await ownerWithListing(t, { modelIds: [modelId] })).home);
+  const builtinInputs = inputsOf(builtin, modelId);
+  assert.ok(builtinInputs.includes("image"), "the built-in rule accepts images");
+
+  const { home } = await ownerWithListing(t, {
+    listing: {
+      data: [
+        { id: modelId, capabilities: { vision: false, video_input: true, audio_input: true } },
+      ],
+    },
+    modelRules: [
+      {
+        providerId: "stand-in",
+        modelId,
+        config: { properties: { inputFormat: { supportsVideo: false } } },
+      },
+    ],
+  });
+
+  const inputs = inputsOf(await printedModels(t, home), modelId);
+  assert.deepEqual(
+    inputs.filter((kind) => kind !== "audio"),
+    builtinInputs.filter((kind) => !["image", "audio", "video"].includes(kind)),
+  );
+  assert.ok(inputs.includes("audio"));
+});
+
+const PIXEL_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+for (const supportsImage of [true, false]) {
+  test(`a terminal paste reaches the model as an image only when the listing allows it (${supportsImage})`, async (t) => {
+    const modelId = "gpt-5.4";
+    const { home, provider } = await ownerWithListing(t, {
+      listing: { data: [{ id: modelId, capabilities: { vision: supportsImage } }] },
+      defaultModelId: modelId,
+      reasoningLevel: "low",
+      script: (request) =>
+        asksForSessionTitle(request) ? say('{"title":"Image check"}') : say("Image check done."),
+    });
+    // Supply a clipboard image through the same command the terminal uses on Linux.
+    await writeFile(
+      join(home.dir, "wl-paste"),
+      `#!/bin/sh\nprintf '%s' '${PIXEL_PNG}' | base64 -d\n`,
+      {
+        mode: 0o755,
+      },
+    );
+    home.env.PATH = `${home.dir}:${home.env.PATH}`;
+
+    const ui = openTerminalUi({ home });
+    t.after(() => ui.dispose());
+    await ui.type("\x16");
+    await ui.shows("[image #1]");
+    await ui.submit(" Check the image.");
+    await ui.shows("Image check done.");
+
+    const turn = provider.modelRequests().find((request) => !asksForSessionTitle(request));
+    assert.equal(turn.body.model, modelId);
+    const userContent = turn.body.messages
+      .filter(({ role }) => role === "user")
+      .flatMap(({ content }) => content);
+    assert.ok(userContent.some((part) => part.text?.includes("Check the image.")));
+    const image = userContent.find((part) => part.type === "image_url");
+    assert.equal(
+      image?.image_url.url,
+      supportsImage ? `data:image/png;base64,${PIXEL_PNG}` : undefined,
+    );
+  });
+}
 
 test("a model only the listing names runs, held to the listing's output limit and levels", async (t) => {
   const { provider, home } = await ownerWithListing(t, {
