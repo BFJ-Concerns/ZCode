@@ -15,12 +15,14 @@ type RunModelFlags = Partial<Record<keyof typeof RUN_MODEL_ARGUMENTS, string>>;
 
 export function readRunModelFlags(
   flags: RunModelFlags,
-  headless: boolean,
+  sessionLaunch: boolean,
 ): ModelSelection | undefined {
   const { provider, model, "reasoning-level": reasoning } = flags;
   if (provider === undefined && model === undefined && reasoning === undefined) return undefined;
-  if (!headless) {
-    throw new Error("--provider, --model and --reasoning-level require --prompt or --target.");
+  if (!sessionLaunch) {
+    throw new Error(
+      "--provider, --model and --reasoning-level require --prompt, --target, or tui.",
+    );
   }
   const providerId = provider?.trim();
   const modelId = model?.trim();
@@ -52,4 +54,10 @@ export function validateRunModelSelection(registry: Registry, selection: ModelSe
         `Unsupported reasoning level "${result.reasoningLevel}" for model "${result.modelId}" from provider "${result.providerId}". Supported levels: ${result.supportedLevels.join(", ")}.`,
       );
   }
+}
+
+export function runModelRuntimeConfig(registry: Registry, selection?: ModelSelection) {
+  if (!selection) return {};
+  validateRunModelSelection(registry, selection);
+  return { modelSelection: selection };
 }

@@ -570,7 +570,11 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
   try {
     runModelSelection = readRunModelFlags(
       parsed.values,
-      typeof parsed.values.prompt === "string" || targetRequest !== undefined,
+      isForceMcsSupportedInvocation({
+        positionals: parsed.positionals,
+        prompt: parsed.values.prompt as string | undefined,
+        targetRequest,
+      }),
     );
   } catch (error) {
     ctx.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -664,6 +668,8 @@ export const run = async (ctx: RunContext, deps: RunDependencies = {}): Promise<
         forceMcs,
         toolsearchMode,
         workflowMode,
+        // fork(per-run-model): pass the selection for the initial interactive session
+        runModelSelection,
       );
     default:
       ctx.stderr.write(`Unknown command: ${commandName(parsed.positionals)}\n\n`);
