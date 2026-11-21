@@ -228,25 +228,27 @@ for (const { command, resume = false } of [
   });
 }
 
-for (const { command, confirmation, provider, model, level } of [
+for (const { command, confirmation, provider, model, level, launchLevel } of [
   {
     command: "/effort low",
     confirmation: "Reasoning effort switched to low.",
     provider: "gateway",
     model: listedModel,
     level: "low",
+    launchLevel: "high",
   },
   {
     command: "/model fallback/first-model",
-    confirmation: "Model switched to fallback/first-model",
+    confirmation: "Model switched to fallback/first-model (enabled).",
     provider: "fallback",
     model: "first-model",
-    level: "none",
+    level: "high",
+    launchLevel: "low",
   },
 ]) {
   test(`${command} replaces the launch selection for a new terminal session`, async (t) => {
     const { home, fallback, gateway } = await receivers(t, terminalReply);
-    const ui = openTerminalUi({ home, args: ["tui", ...modelArgs] });
+    const ui = openTerminalUi({ home, args: ["tui", ...modelFlags({ level: launchLevel })] });
     t.after(() => ui.dispose());
 
     await ui.submit(command);
@@ -261,7 +263,10 @@ for (const { command, confirmation, provider, model, level } of [
     const unexpected = provider === "gateway" ? fallback : gateway;
     const request = expected
       .modelRequests()
-      .find((request) => JSON.stringify(request.body.messages).includes(prompt));
+      .find(
+        (request) =>
+          !asksForSessionTitle(request) && JSON.stringify(request.body.messages).includes(prompt),
+      );
     assert.ok(request, "the selected provider received the new session's prompt");
     assert.equal(request.body.model, model);
     assert.equal(request.body.reasoning_effort, level);
