@@ -63,11 +63,13 @@ export async function listSessionsForTui(deps: RunDependencies) {
 
 export async function loadInitialTuiSessionMetadata(
   promptHandler: TuiMetadataSource,
+  // fork(per-run-model): report startup failures for an explicit launch selection
+  requireMetadata = false,
 ): Promise<TuiSessionMetadata> {
   try {
     return (await promptHandler.getSessionMetadata?.()) ?? {};
   } catch (error) {
-    if (isStartupGateError(error)) {
+    if (requireMetadata || isStartupGateError(error)) {
       throw error;
     }
     return {};

@@ -1,14 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { launch } from "../../harness/launcher.mjs";
-import { say, startModelProvider } from "../../harness/model-provider.mjs";
+import { asksForSessionTitle, say, startModelProvider } from "../../harness/model-provider.mjs";
 import { createOwnerHome, providerConfiguration } from "../../harness/owner-home.mjs";
+import { openTerminalUi } from "../../harness/terminal-ui.mjs";
 
 const listedModel = "vendor/listed-only";
-const modelArgs = ["--provider", "gateway", "--model", listedModel, "--reasoning-level", "high"];
+const modelFlags = ({ provider = "gateway", model = listedModel, level = "high" } = {}) => [
+  "--provider",
+  provider,
+  "--model",
+  model,
+  "--reasoning-level",
+  level,
+];
+const modelArgs = modelFlags();
 
 async function receivers(t, script = [say("Used the named model.")]) {
-  const fallback = await startModelProvider({ script: [say("Used the owner's default.")] });
+  const fallback = await startModelProvider({ script: () => say("Used the owner's default.") });
   t.after(() => fallback.close());
   const gateway = await startModelProvider({
     listing: {
@@ -138,23 +147,84 @@ test("help names the command that prints models as JSON and the per-run options"
 
   assert.equal(outcome.exitCode, 0, outcome.stderr);
   assert.match(outcome.stdout, /^  models\s+.*JSON/m);
-  assert.match(outcome.stdout, /--provider .*--model .*--reasoning-level /);
+  assert.match(outcome.stdout, /--provider .*--model .*--reasoning-level .*interactive/);
 });
 
-test("model options require a complete selection and a headless invocation", async (t) => {
+test("model options require a complete selection and a session launch", async (t) => {
   const { home, fallback, gateway } = await receivers(t);
   const incomplete = await run(t, home, modelArgs.slice(0, -2));
   assert.equal(incomplete.exitCode, 1);
   assert.match(incomplete.stderr, /--provider, --model and --reasoning-level together/);
 
-  const tui = launch({ home, command: ["tui"], args: modelArgs });
-  t.after(() => tui.dispose());
-  const outcome = await tui.outcome;
+  const doctor = launch({ home, command: ["doctor"], args: modelArgs });
+  t.after(() => doctor.dispose());
+  const outcome = await doctor.outcome;
   assert.equal(outcome.exitCode, 1);
-  assert.match(outcome.stderr, /require --prompt or --target/);
+  assert.match(outcome.stderr, /require --prompt, --target, or tui/);
   assert.equal(gateway.modelRequests().length, 0);
   assert.equal(fallback.modelRequests().length, 0);
 });
+
+for (const { command, resume = false } of [
+  { command: [] },
+  { command: ["tui"] },
+  { command: ["tui", "--resume"], resume: true },
+]) {
+  test(`interactive ${["zcode", ...command].join(" ")} uses the named model and level for its session`, async (t) => {
+    const { home, fallback, gateway } = await receivers(t, (request) =>
+      asksForSessionTitle(request) ? say('{"title":"Named model"}') : say("Used the named model."),
+    );
+    const args = [...command];
+    if (resume) {
+      const earlier = await run(t, home, []);
+      assert.equal(earlier.exitCode, 0, earlier.stderr);
+      args.push(earlier.result.sessionId);
+    }
+    const fallbackCount = fallback.modelRequests().length;
+    const ui = openTerminalUi({ home, args: [...args, ...modelArgs] });
+    t.after(() => ui.dispose());
+
+    const prompt = "Reply from the selected model.";
+    await ui.submit(prompt);
+    await ui.shows("Used the named model.");
+    const request = gateway
+      .modelRequests()
+      .find(
+        (request) =>
+          !asksForSessionTitle(request) && JSON.stringify(request.body.messages).includes(prompt),
+      );
+    assert.ok(request, "the named provider received the prompt");
+    assert.equal(request.body.model, listedModel);
+    assert.equal(request.body.reasoning_effort, "high");
+    assert.equal(fallback.modelRequests().length, fallbackCount);
+    if (resume) assert.match(JSON.stringify(request.body.messages), /Used the owner's default\./);
+
+    const exit = await ui.quit();
+    assert.equal(exit.exitCode, 0, exit.screen);
+    const next = await run(t, home, []);
+    assert.equal(next.exitCode, 0, next.stderr);
+    assert.equal(fallback.modelRequests()[fallbackCount].body.model, "owner-choice");
+  });
+}
+
+for (const { flags, error } of [
+  { flags: modelFlags({ provider: "missing" }), error: 'Unknown provider "missing"' },
+  { flags: modelFlags({ model: "missing" }), error: 'Unknown model "missing"' },
+  { flags: modelFlags({ level: "medium" }), error: 'Unsupported reasoning level "medium"' },
+  { flags: modelArgs.slice(0, -2), error: "Supply non-empty values" },
+]) {
+  test(`interactive startup refuses ${error.toLowerCase()}`, async (t) => {
+    const { home, fallback, gateway } = await receivers(t);
+    const ui = openTerminalUi({ home, args: ["tui", ...flags] });
+    t.after(() => ui.dispose());
+
+    await ui.shows(error);
+    const outcome = await ui.quit();
+    assert.equal(outcome.exitCode, 1, outcome.screen);
+    assert.equal(gateway.modelRequests().length, 0);
+    assert.equal(fallback.modelRequests().length, 0);
+  });
+}
 
 test("a headless target uses the named provider, model and level", async (t) => {
   const { home, fallback, gateway } = await receivers(t, [

@@ -1,4 +1,4 @@
-import type { ToolSearchMode } from "@zcode/contracts";
+import type { ModelSelection, ToolSearchMode } from "@zcode/contracts";
 import { getDefaultConfigPath, updateUiLocaleInFileConfig } from "@zcode/adapters/config";
 import type { SessionEvent } from "@zcode/contracts";
 import type { ZCodeAppOptions } from "@zcode/bootstrap";
@@ -10,6 +10,7 @@ import { createCommandCenter, parseSlashCommand } from "./command-center.js";
 import type { CommandCenterApp } from "./command-center.js";
 import { resolveDisplayLocale } from "./locale.js";
 import { createCliHeadlessBrowserRuntime } from "./headless-browser.js";
+import { runModelRuntimeConfig } from "./fork/per-run-model/index.js";
 // 复用防御式 runtime 读取：subscribeEvents 不在 app 的静态类型面上，
 // 两处各写一份「怎么把它读出来」就会在方法改名时只修好一处。
 import { readRuntimeEventSubscriber } from "./runtime-event-subscriber.js";
@@ -64,6 +65,7 @@ export function createTuiSubmitPrompt(
   browserUse?: GlobalOptions["browserUse"],
   browserExecutable?: GlobalOptions["browserExecutable"],
   workflowMode: DynamicWorkflowMode = DEFAULT_CLI_WORKFLOW_MODE,
+  runModelSelection?: ModelSelection,
 ): TuiPromptHandler {
   let app: Awaited<ReturnType<NonNullable<RunDependencies["createZCodeApp"]>>> | undefined;
   let activeUiLocale = uiLocale;
@@ -139,7 +141,7 @@ export function createTuiSubmitPrompt(
     return app as unknown as CommandCenterApp;
   };
 
-  const createApp = async (request: CliResumeRequest) => {
+  const createApp = async (request: CliResumeRequest, selection?: ModelSelection) => {
     if (closeHandlerPromise) throw new Error("TUI prompt handler is closed");
     const {
       appEnv,
@@ -149,6 +151,11 @@ export function createTuiSubmitPrompt(
       sessionId,
       workingDirectory,
     } = await prepareTuiAppRuntime(deps, version, request, processRuntime);
+    // fork(per-run-model): validate against the loaded registry before creating a session
+    const modelConfig = runModelRuntimeConfig(
+      providerRegistryRuntime.runtime.registryService,
+      selection,
+    );
     const providerEndpointRoutingPort = processRuntime.providerEndpointRoutingPort;
     const browserRuntime = createCliHeadlessBrowserRuntime({ browserExecutable, browserUse }, deps);
     let createdApp: Awaited<ReturnType<NonNullable<RunDependencies["createZCodeApp"]>>>;
@@ -169,6 +176,7 @@ export function createTuiSubmitPrompt(
           : {}),
         resume: sessionId !== undefined,
         runtimeConfig: {
+          ...modelConfig,
           ...(modeState.override ? { mode: modeState.override } : {}),
           ...(toolDisallowlist ? { toolDisallowlist } : {}),
           toolSearch: { mode: toolsearchMode },
@@ -202,7 +210,8 @@ export function createTuiSubmitPrompt(
   };
 
   const getApp = async (): Promise<CommandCenterApp> => {
-    app ??= await createApp(resumeRequest);
+    // fork(per-run-model): use the launch selection for the first session only
+    app ??= await createApp(resumeRequest, runModelSelection);
     modeState.current = readTuiMode(app, currentCliMode(modeState));
     return app as unknown as CommandCenterApp;
   };

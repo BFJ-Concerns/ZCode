@@ -65,9 +65,10 @@ export const hang = () => ({ kind: "hang" });
 
 /**
  * @param {object} [options]
- * @param {unknown} [options.listing]
+ * @param {object | ((url: URL) => object)} [options.listing]
  *   The JSON body served at `GET /v1/models`, in whichever provider's shape the rung
- *   is proving. Left out, the listing answers 404: a provider with no listing.
+ *   is proving. A function can serve different bodies by query. Left out, the
+ *   listing answers 404: a provider with no listing.
  *   `hang()` accepts the listing request and never answers it.
  * @param {Reply[] | ((request: RecordedRequest, index: number) => Reply)} [options.script]
  *   The reply to each model request: a list consumed in arrival order, or a function
@@ -108,11 +109,12 @@ export async function startModelProvider({ listing, script = [] } = {}) {
       waiter.resolve(recorded);
     }
 
-    const { pathname } = new URL(recorded.path, `http://${LOOPBACK}`);
+    const url = new URL(recorded.path, `http://${LOOPBACK}`);
+    const { pathname } = url;
     if (recorded.method === "GET" && pathname === "/v1/models") {
       if (listing === undefined) return sendJson(response, 404, errorBody("no model listing"));
       if (listing?.kind === "hang") return undefined;
-      return sendJson(response, 200, listing);
+      return sendJson(response, 200, typeof listing === "function" ? listing(url) : listing);
     }
     if (recorded.method === "POST" && pathname === "/v1/chat/completions") {
       const index = modelRequestCount;

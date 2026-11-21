@@ -1,4 +1,4 @@
-import type { ToolSearchMode } from "@zcode/contracts";
+import type { ModelSelection, ToolSearchMode } from "@zcode/contracts";
 import type { RunContext, GlobalOptions } from "@zcode/shared-types";
 import { resolveZCodeRuntimeEnv, type DynamicWorkflowMode } from "@zcode/shared";
 import { createNodeClipboardImageReader } from "./clipboard-image.js";
@@ -26,6 +26,7 @@ export const runTuiCommand = async (
   forceMcs = false,
   toolsearchMode: ToolSearchMode = "off",
   workflowMode: DynamicWorkflowMode = DEFAULT_CLI_WORKFLOW_MODE,
+  runModelSelection?: ModelSelection,
 ): Promise<number> => {
   try {
     const modeState = createCliModeState(mode);
@@ -52,6 +53,8 @@ export const runTuiCommand = async (
       options.browserUse,
       options.browserExecutable,
       workflowMode,
+      // fork(per-run-model): initialise the launch session with the requested selection
+      runModelSelection,
     );
     const unregisterShutdownHandlers = registerCliShutdownHandlers({
       cleanup: async () => {
@@ -65,7 +68,8 @@ export const runTuiCommand = async (
       return await runTui({
         loadStartupOptions: async () => {
           const [metadata, customCommands, workspaceGitBranch] = await Promise.all([
-            loadInitialTuiSessionMetadata(promptHandler),
+            // fork(per-run-model): an explicit selection must pass startup validation
+            loadInitialTuiSessionMetadata(promptHandler, runModelSelection !== undefined),
             listCustomCommandsForTui(deps).catch(() => undefined),
             (deps.resolveWorkspaceGitBranch ?? resolveWorkspaceGitBranch)({
               workspaceDirectory,
