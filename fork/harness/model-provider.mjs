@@ -36,11 +36,14 @@ export const fail = (status, message = "stand-in provider failure") => ({
   message,
 });
 
+/** The provider answers with an HTTP error whose JSON body is `body`, in its own shape. */
+export const refuse = (status, body) => ({ kind: "refuse", status, body });
+
 /** The provider accepts the request and never answers it. */
 export const hang = () => ({ kind: "hang" });
 
 /**
- * @typedef {ReturnType<typeof say> | ReturnType<typeof callTool> | ReturnType<typeof fail> | ReturnType<typeof hang>} Reply
+ * @typedef {ReturnType<typeof say> | ReturnType<typeof callTool> | ReturnType<typeof fail> | ReturnType<typeof refuse> | ReturnType<typeof hang>} Reply
  *
  * @typedef {object} RecordedRequest
  * @property {string} method
@@ -213,6 +216,7 @@ function sendReply(response, recorded, index, reply) {
   }
   if (reply.kind === "hang") return undefined;
   if (reply.kind === "fail") return sendJson(response, reply.status, errorBody(reply.message));
+  if (reply.kind === "refuse") return sendJson(response, reply.status, reply.body);
 
   const id = `chatcmpl-standin-${index + 1}`;
   const model = recorded.body?.model ?? "stand-in";
