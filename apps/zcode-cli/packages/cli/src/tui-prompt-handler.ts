@@ -10,7 +10,8 @@ import { createCommandCenter, parseSlashCommand } from "./command-center.js";
 import type { CommandCenterApp } from "./command-center.js";
 import { resolveDisplayLocale } from "./locale.js";
 import { createCliHeadlessBrowserRuntime } from "./headless-browser.js";
-import { runModelRuntimeConfig } from "./fork/per-run-model/index.js";
+// fork(per-run-model): import the terminal selection policy
+import { createTuiRunModelSelection, runModelRuntimeConfig } from "./fork/per-run-model/index.js";
 // 复用防御式 runtime 读取：subscribeEvents 不在 app 的静态类型面上，
 // 两处各写一份「怎么把它读出来」就会在方法改名时只修好一处。
 import { readRuntimeEventSubscriber } from "./runtime-event-subscriber.js";
@@ -69,6 +70,8 @@ export function createTuiSubmitPrompt(
 ): TuiPromptHandler {
   let app: Awaited<ReturnType<NonNullable<RunDependencies["createZCodeApp"]>>> | undefined;
   let activeUiLocale = uiLocale;
+  // fork(per-run-model): keep the selection across app replacements
+  const runModel = createTuiRunModelSelection(runModelSelection);
   // 进程级句柄（telemetry / Provider Registry / endpoint 路由）跨 App 替换复用，见 runtime 文件。
   const processRuntime = createTuiProcessRuntimeState();
   let closeHandlerPromise: Promise<void> | undefined;
@@ -210,8 +213,8 @@ export function createTuiSubmitPrompt(
   };
 
   const getApp = async (): Promise<CommandCenterApp> => {
-    // fork(per-run-model): use the launch selection for the first session only
-    app ??= await createApp(resumeRequest, runModelSelection);
+    // fork(per-run-model): apply the launch selection to the initial app
+    app ??= await createApp(resumeRequest, runModel.forNewSession());
     modeState.current = readTuiMode(app, currentCliMode(modeState));
     return app as unknown as CommandCenterApp;
   };
@@ -234,10 +237,8 @@ export function createTuiSubmitPrompt(
 
   const newApp = async (): Promise<CommandCenterApp> => {
     return await replaceApp(
-      async () =>
-        await createApp({
-          continueSession: false,
-        }),
+      // fork(per-run-model): apply the terminal's selection to each fresh session
+      async () => await createApp({ continueSession: false }, runModel.forNewSession()),
     );
   };
 
@@ -298,6 +299,8 @@ export function createTuiSubmitPrompt(
     },
     resumeApp,
     saveDefaultModelSelection: async (selection) => {
+      // fork(per-run-model): carry an explicit model or effort choice into /new
+      runModel.modelChanged(selection);
       const runtime = await processRuntime.providerRegistryRuntimePromise;
       if (!runtime?.modelSelectionConfigRepository) {
         throw new Error("Default model configuration storage is unavailable.");

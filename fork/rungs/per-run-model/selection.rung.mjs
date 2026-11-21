@@ -15,6 +15,8 @@ const modelFlags = ({ provider = "gateway", model = listedModel, level = "high" 
   level,
 ];
 const modelArgs = modelFlags();
+const terminalReply = (request) =>
+  asksForSessionTitle(request) ? say('{"title":"Named model"}') : say("Used the named model.");
 
 async function receivers(t, script = [say("Used the named model.")]) {
   const fallback = await startModelProvider({ script: () => say("Used the owner's default.") });
@@ -171,9 +173,7 @@ for (const { command, resume = false } of [
   { command: ["tui", "--resume"], resume: true },
 ]) {
   test(`interactive ${["zcode", ...command].join(" ")} uses the named model and level for its session`, async (t) => {
-    const { home, fallback, gateway } = await receivers(t, (request) =>
-      asksForSessionTitle(request) ? say('{"title":"Named model"}') : say("Used the named model."),
-    );
+    const { home, fallback, gateway } = await receivers(t, terminalReply);
     const args = [...command];
     if (resume) {
       const earlier = await run(t, home, []);
@@ -199,11 +199,79 @@ for (const { command, resume = false } of [
     assert.equal(fallback.modelRequests().length, fallbackCount);
     if (resume) assert.match(JSON.stringify(request.body.messages), /Used the owner's default\./);
 
+    await ui.submit("/new");
+    await ui.shows("Started new session");
+    const newPrompt = "Reply in the new terminal session.";
+    await ui.submit(newPrompt);
+    await Promise.race([ui.shows("Used the named model."), ui.shows("Used the owner's default.")]);
+    const newRequest = gateway
+      .modelRequests()
+      .find(
+        (request) =>
+          !asksForSessionTitle(request) &&
+          JSON.stringify(request.body.messages).includes(newPrompt),
+      );
+    assert.ok(newRequest, "the named provider received the new session's prompt");
+    assert.equal(newRequest.body.model, listedModel);
+    assert.equal(newRequest.body.reasoning_effort, "high");
+    assert.ok(
+      !JSON.stringify(newRequest.body.messages).includes(prompt),
+      "/new started a separate conversation",
+    );
+    assert.equal(fallback.modelRequests().length, fallbackCount);
+
     const exit = await ui.quit();
     assert.equal(exit.exitCode, 0, exit.screen);
     const next = await run(t, home, []);
     assert.equal(next.exitCode, 0, next.stderr);
     assert.equal(fallback.modelRequests()[fallbackCount].body.model, "owner-choice");
+  });
+}
+
+for (const { command, confirmation, provider, model, level, launchLevel } of [
+  {
+    command: "/effort low",
+    confirmation: "Reasoning effort switched to low.",
+    provider: "gateway",
+    model: listedModel,
+    level: "low",
+    launchLevel: "high",
+  },
+  {
+    command: "/model fallback/first-model",
+    confirmation: "Model switched to fallback/first-model (enabled).",
+    provider: "fallback",
+    model: "first-model",
+    level: "high",
+    launchLevel: "low",
+  },
+]) {
+  test(`${command} replaces the launch selection for a new terminal session`, async (t) => {
+    const { home, fallback, gateway } = await receivers(t, terminalReply);
+    const ui = openTerminalUi({ home, args: ["tui", ...modelFlags({ level: launchLevel })] });
+    t.after(() => ui.dispose());
+
+    await ui.submit(command);
+    await ui.shows(confirmation);
+    await ui.submit("/new");
+    await ui.shows("Started new session");
+    const prompt = "Reply using the selection I made in the terminal.";
+    await ui.submit(prompt);
+    await Promise.race([ui.shows("Used the named model."), ui.shows("Used the owner's default.")]);
+
+    const expected = provider === "gateway" ? gateway : fallback;
+    const unexpected = provider === "gateway" ? fallback : gateway;
+    const request = expected
+      .modelRequests()
+      .find(
+        (request) =>
+          !asksForSessionTitle(request) && JSON.stringify(request.body.messages).includes(prompt),
+      );
+    assert.ok(request, "the selected provider received the new session's prompt");
+    assert.equal(request.body.model, model);
+    assert.equal(request.body.reasoning_effort, level);
+    assert.equal(unexpected.modelRequests().length, 0);
+    assert.equal((await ui.quit()).exitCode, 0);
   });
 }
 
