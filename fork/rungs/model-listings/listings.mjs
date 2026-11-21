@@ -14,6 +14,7 @@ export const cliProxyApiCatalogue = {
       context_window: 272_000,
       max_context_window: 300_000,
       max_tokens: 64_000,
+      input_modalities: ["text", "image"],
       supported_reasoning_levels: [
         { effort: "low", description: "Fast responses with lighter reasoning" },
         { effort: "medium", description: "Balances speed and reasoning depth" },
@@ -27,6 +28,7 @@ export const cliProxyApiCatalogue = {
       display_name: "gateway-chat",
       max_context_window: 128_000,
       max_tokens: 16_384,
+      input_modalities: ["text"],
       supported_reasoning_levels: [
         { effort: "none", description: "No reasoning" },
         { effort: "low", description: "Fast responses with lighter reasoning" },
@@ -44,6 +46,7 @@ export const openRouterListing = {
       id: "vendor/reasoner",
       name: "Vendor: Reasoner",
       context_length: 450_000,
+      architecture: { input_modalities: ["text", "image", "file", "video", "audio"] },
       top_provider: {
         context_length: 400_000,
         max_completion_tokens: 100_000,
@@ -63,3 +66,36 @@ export const openRouterListing = {
     },
   ],
 };
+
+/** NanoGPT gives only IDs unless the detailed catalogue is requested. */
+export function nanoGptListing(url) {
+  if (url.searchParams.get("detailed") !== "true") {
+    return { data: [{ id: "nano-vision" }, { id: "nano-text" }] };
+  }
+  return {
+    data: [
+      {
+        id: "nano-vision",
+        context_length: 900_000,
+        max_output_tokens: 180_000,
+        reasoning_efforts: ["none", "low", "high", "max"],
+        architecture: { input_modalities: ["text", "image", "video", "audio"] },
+        capabilities: {
+          vision: true,
+          video_input: true,
+          audio_input: true,
+          pdf_upload: true,
+          reasoning: true,
+        },
+      },
+      {
+        id: "nano-text",
+        context_length: 80_000,
+        max_output_tokens: 12_000,
+        architecture: { input_modalities: ["text"] },
+        capabilities: { vision: false, reasoning: false },
+      },
+      { id: "TEE/paused", available: false },
+    ],
+  };
+}

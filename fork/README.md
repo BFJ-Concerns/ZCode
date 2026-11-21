@@ -129,6 +129,24 @@ comments in Chinese. A difference is specified by the contract in the annexe (th
 the two commands below. Comments and messages the fork writes are
 in English.
 
+## Model listings
+
+The provider registry asks NanoGPT's configured website or direct API host for
+`/models?detailed=true` under its versioned API URL. Other providers receive the
+CLIProxyAPI catalogue query. Paused entries marked `available: false` are excluded
+from listing discovery.
+
+The registry overlays each model's advertised limits, reasoning levels and input
+capabilities on its built-in rules, then applies the owner's configuration.
+A valid input modality array describes the supported kinds. Where the listing also
+gives explicit per-kind capability flags, those flags take precedence. A missing
+field preserves the value from the built-in rules. A failed listing leaves the
+provider usable with the models and rules already configured.
+
+`zcode models` reports the effective input capabilities as an `inputModalities`
+array of `text`, `image`, `pdf`, `video` and `audio`. The active model reads the
+same capabilities when deciding whether to send an attachment.
+
 ## Proof
 
 Each difference is proved by **rungs**: checks that drive the built `zcode` from outside

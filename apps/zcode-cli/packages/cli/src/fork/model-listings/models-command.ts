@@ -1,7 +1,7 @@
 /**
  * `zcode models`: prints every model the fork can use as JSON, each with the context
- * window, maximum output and reasoning levels a run against it will hold, and what
- * reading each configured provider's model listing came to.
+ * window, maximum output, reasoning levels and input modalities a run against it
+ * will hold, and what reading each configured provider's model listing came to.
  */
 
 import {
@@ -18,12 +18,21 @@ import type { RunDependencies } from "../../cli-types.js";
 export const MODELS_COMMAND = "models";
 const MODELS_COMMAND_USAGE = `Usage: zcode ${MODELS_COMMAND}`;
 
+const INPUT_MODALITIES = [
+  ["text", "supportsText"],
+  ["image", "supportsImage"],
+  ["pdf", "supportsPdf"],
+  ["video", "supportsVideo"],
+  ["audio", "supportsAudio"],
+] as const;
+
 export interface UsableModel {
   readonly provider: string;
   readonly model: string;
   readonly contextWindow: number;
   readonly maxOutputTokens: number;
   readonly reasoningLevels: readonly string[];
+  readonly inputModalities: readonly (typeof INPUT_MODALITIES)[number][0][];
 }
 
 export type ListingOutcome =
@@ -76,6 +85,9 @@ export async function runModelsCommand(
           contextWindow: config.properties.contextWindow,
           maxOutputTokens: config.optionSpecs.maxOutputTokens.max,
           reasoningLevels: [...config.optionSpecs.reasoningLevel.values],
+          inputModalities: INPUT_MODALITIES.filter(
+            ([, capability]) => config.properties.inputFormat[capability],
+          ).map(([kind]) => kind),
         }),
       ),
     );
