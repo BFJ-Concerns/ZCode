@@ -69,6 +69,8 @@ export function createTuiSubmitPrompt(
 ): TuiPromptHandler {
   let app: Awaited<ReturnType<NonNullable<RunDependencies["createZCodeApp"]>>> | undefined;
   let activeUiLocale = uiLocale;
+  // fork(per-run-model): /new 会替换 App，启动选型由终端进程持有。
+  let newSessionModelSelection = runModelSelection;
   // 进程级句柄（telemetry / Provider Registry / endpoint 路由）跨 App 替换复用，见 runtime 文件。
   const processRuntime = createTuiProcessRuntimeState();
   let closeHandlerPromise: Promise<void> | undefined;
@@ -210,8 +212,7 @@ export function createTuiSubmitPrompt(
   };
 
   const getApp = async (): Promise<CommandCenterApp> => {
-    // fork(per-run-model): use the launch selection for the first session only
-    app ??= await createApp(resumeRequest, runModelSelection);
+    app ??= await createApp(resumeRequest, newSessionModelSelection);
     modeState.current = readTuiMode(app, currentCliMode(modeState));
     return app as unknown as CommandCenterApp;
   };
@@ -234,10 +235,7 @@ export function createTuiSubmitPrompt(
 
   const newApp = async (): Promise<CommandCenterApp> => {
     return await replaceApp(
-      async () =>
-        await createApp({
-          continueSession: false,
-        }),
+      async () => await createApp({ continueSession: false }, newSessionModelSelection),
     );
   };
 
@@ -298,6 +296,8 @@ export function createTuiSubmitPrompt(
     },
     resumeApp,
     saveDefaultModelSelection: async (selection) => {
+      // fork(per-run-model): 显式切换已生效，保存偏好失败也不应恢复旧的启动选型。
+      if (runModelSelection) newSessionModelSelection = selection;
       const runtime = await processRuntime.providerRegistryRuntimePromise;
       if (!runtime?.modelSelectionConfigRepository) {
         throw new Error("Default model configuration storage is unavailable.");
