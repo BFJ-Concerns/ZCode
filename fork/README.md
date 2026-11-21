@@ -177,15 +177,15 @@ record. Tests within a file run one after another and share its sandbox.
 
 ### The harness
 
-| Module                        | What a rung gets from it                                                                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `harness/owner-home.mjs`      | A fresh home directory holding the owner's configuration files, and the environment that makes `zcode` use it.                                    |
-| `harness/model-provider.mjs`  | A stand-in provider: serves a model listing, answers model requests from a script (`say`, `callTool`, `fail`, `hang`), records every request.     |
-| `harness/searxng.mjs`         | A stand-in SearXNG instance with JSON enabled: answers a search in JSON only when it asks for `format=json`, records every query.                 |
-| `harness/http-proxy.mjs`      | A stand-in HTTP proxy: records every destination it is asked to reach, reaches none.                                                              |
-| `harness/launcher.mjs`        | Runs `zcode` as Ensemble's command-line engine runs a worker: prompt as one argument, stdout apart from stderr, exit status, a signal to stop it. |
-| `harness/terminal-ui.mjs`     | Runs the terminal UI in a terminal of its own: types and submits prompts, waits for text to be on the screen, leaves with Ctrl-C from any screen. |
-| `harness/network-sandbox.mjs` | The sandbox's record of attempts to leave, and names pointed at a stand-in.                                                                       |
+| Module                        | What a rung gets from it                                                                                                                                |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `harness/owner-home.mjs`      | A fresh home directory holding the owner's configuration files, and the environment that makes `zcode` use it.                                          |
+| `harness/model-provider.mjs`  | A stand-in provider: serves a model listing, answers model requests from a script (`say`, `callTool`, `fail`, `refuse`, `hang`), records every request. |
+| `harness/searxng.mjs`         | A stand-in SearXNG instance with JSON enabled: answers a search in JSON only when it asks for `format=json`, records every query.                       |
+| `harness/http-proxy.mjs`      | A stand-in HTTP proxy: records every destination it is asked to reach, reaches none.                                                                    |
+| `harness/launcher.mjs`        | Runs `zcode` as Ensemble's command-line engine runs a worker: prompt as one argument, stdout apart from stderr, exit status, a signal to stop it.       |
+| `harness/terminal-ui.mjs`     | Runs the terminal UI in a terminal of its own: types and submits prompts, waits for text to be on the screen, leaves with Ctrl-C from any screen.       |
+| `harness/network-sandbox.mjs` | The sandbox's record of attempts to leave, and names pointed at a stand-in.                                                                             |
 
 `harness/zcode-processes.mjs` is the harness's own: it keeps track of every `zcode` the
 launcher and the terminal UI start, so that removing a home first ends every `zcode`

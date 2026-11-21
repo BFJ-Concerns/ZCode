@@ -29,6 +29,7 @@ import { createOpenAIResponsesJsonCompatFetch } from "./openai-responses-json-co
 import { createModelOptionMapFetch, type RawRequestBodyCapture } from "./model-option-map-fetch.js";
 import { createNetworkProxyFetch } from "../network/proxy-fetch.js";
 import { createProviderEndpointRoutingFetch } from "./provider-endpoint-routing-fetch.js";
+import { fitOutputToNanoGptWindow } from "../fork/nanogpt-output-budget/index.js";
 import { normalizeModelTlsFailure } from "./failure-tls.js";
 import {
   mergeModelRequestHeaders,
@@ -314,7 +315,11 @@ export class AiSdkModelExecution {
       transport: providerTransport,
     });
     const fetch = createProviderBusinessErrorFetch({
-      fetch: requestTransport,
+      // fork(nanogpt-output-budget): asks again for the output room NanoGPT reports when it refuses
+      fetch: fitOutputToNanoGptWindow(requestTransport, providerConfig.kind, {
+        capture: rawRequestBodyCapture,
+        logger: this.logger,
+      }),
       providerId,
       providerKind: providerConfig.kind,
       streamTiming,
