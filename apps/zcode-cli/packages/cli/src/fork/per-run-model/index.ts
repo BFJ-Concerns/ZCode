@@ -61,3 +61,14 @@ export function runModelRuntimeConfig(registry: Registry, selection?: ModelSelec
   validateRunModelSelection(registry, selection);
   return { modelSelection: selection };
 }
+
+export function createTuiRunModelSelection(launchSelection?: ModelSelection) {
+  let selection = launchSelection;
+  return {
+    forNewSession: () => selection,
+    modelChanged(nextSelection: ModelSelection) {
+      // Explicit choices take effect even if saving the global default fails.
+      if (launchSelection) selection = nextSelection;
+    },
+  };
+}

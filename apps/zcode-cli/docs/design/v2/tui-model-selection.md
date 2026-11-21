@@ -60,26 +60,6 @@ filter and render local suggestions. It owns only the popup filter, highlighted
 index, and completion behavior; it does not cache model catalog state or apply
 model switches directly.
 
-## Session creation with launch flags
-
-When `zcode` or `zcode tui` starts with `--provider`, `--model` and
-`--reasoning-level`, the CLI prompt handler owns the selection used to create
-sessions in that terminal. Startup and `/new` pass it to Bootstrap, which
-owns the active session's selection. The launch and `/new` leave the saved
-default untouched.
-
-A successful `/model` or `/effort` sets the selection for subsequent
-`/new` sessions and follows the usual path for saving the default. If the
-save fails, the terminal keeps the selection until it closes. Listing or
-rejecting choices leaves the selection in place. `/resume` and `/fork`
-within the terminal restore the target session's selection.
-
-```text
-launch flags → CLI prompt handler → startup or /new → Bootstrap session
-successful /model or /effort → CLI prompt handler → next /new
-                                                 └→ saved default
-```
-
 ## Sidebar Projection
 
 - The sidebar `Run` section renders `Provider` and `Model` as separate rows.
